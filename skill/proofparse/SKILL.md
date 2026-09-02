@@ -5,8 +5,9 @@ description: 批量科研 PDF → Markdown 提取流水线，本地优先（Mine
 
 # proofparse：批量论文 PDF → Markdown（三层 QC）
 
-项目根：`D:\Code\PDF`。专用 Python：`D:\DevTools\Conda\envs\litparse\python.exe`
-（可用 `PROOFPARSE_PYTHON` 覆盖；Git Bash 中路径一律用正斜杠）。
+项目根：本仓库克隆目录（下文记作 `<repo>`）。Python：按 README 装好依赖的
+解释器（conda 环境或 `pip install -e .` 后的 `python`；亦可用
+`PROOFPARSE_PYTHON` 指定）。Git Bash 中路径一律用正斜杠。
 
 ## 额度节省协议（核心原则）
 
@@ -18,8 +19,8 @@ description: 批量科研 PDF → Markdown 提取流水线，本地优先（Mine
 ## 三步流程
 
 ```bash
-cd /d/Code/PDF
-PY=/d/DevTools/Conda/envs\litparse/python.exe
+cd <repo>
+PY=${PROOFPARSE_PYTHON:-python}
 
 # 1) 解析 + 确定性 QC + 公式双识别（GPU，约 60-70 秒/篇；已有输出自动跳过，-f 强制）
 $PY ingest.py <pdf文件或目录> -o output/papers

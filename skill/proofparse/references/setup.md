@@ -2,8 +2,8 @@
 
 ## 运行环境
 
-- Conda 环境：`D:\DevTools\Conda\envs\litparse\python.exe`（Python 3.12，
-  torch + CUDA，MinerU pipeline，PP-FormulaNet+ 公式双识别）
+- Python 3.12 环境（Windows 上 MinerU 暂不支持 3.13）：
+  torch + CUDA，MinerU pipeline（`mineru[pipeline]`），PP-FormulaNet+ 公式双识别
 - GPU：RTX 4060 Ti 8GB 实测可行；`PROOFPARSE_MINERU_DEVICE=cpu` 可退化为 CPU（慢）
 - 解析吞吐：约 60-70 秒/篇（含模型加载；批处理只加载一次）
 - 公式双识别可用 `--no-formula-check` 跳过（快约 30%，但 REVIEW 清单会变粗）
@@ -12,7 +12,7 @@
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `PROOFPARSE_PYTHON` | `D:\DevTools\Conda\envs\litparse\python.exe` | 专用解释器 |
+| `PROOFPARSE_PYTHON` | 当前解释器 | 运行 MinerU/公式模型的 Python |
 | `MINERU_EXE` | 同上 Scripts/mineru.exe | MinerU CLI 路径 |
 | `PROOFPARSE_MINERU_DEVICE` | `cuda` | `cuda` / `cpu` |
 | `PROOFPARSE_VLM_BASE_URL` | — | 终审 VLM（OpenAI 兼容） |

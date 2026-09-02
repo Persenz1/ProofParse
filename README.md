@@ -82,10 +82,11 @@ output/papers/review_summary.json   # 每篇状态：auto_pass / reviewed / stil
 
 ## 作为 Agent Skill 使用
 
-`skill/proofparse/` 是一个完整的 Kimi/Claude Code 风格 skill（SKILL.md + references），
-让 agent 用几条 CLI 完成批量提取而不消耗自身上下文去读 PDF：
-把它复制到 `~/.config/agents/skills/`（或 Kimi Work 托管 skills 目录），
-或直接安装发布页的 `proofparse.skill` 包。
+`skill/proofparse/` 是一个符合 SKILL.md 规范（YAML frontmatter + 按需加载的
+references）的 agent skill，让 agent 用几条 CLI 完成批量提取，
+而不消耗自身上下文去读 PDF：把该目录复制到 agent 运行环境的 skills
+加载目录（如 `~/.config/agents/skills/`）即可，或使用发布页的
+`proofparse.skill` 打包文件。
 
 ## 配置
 
@@ -99,10 +100,6 @@ output/papers/review_summary.json   # 每篇状态：auto_pass / reviewed / stil
   已保守处理（低置信不动正文 + .bak 备份 + agent_override 回滚先例），根治需在 Layer 2 加 bbox 校验
 - 文本类警告的两个候选在 qc.json 中是截断前缀；终审时会从 document.json 补全候选 A
 - MinerU 3.x content_list 的 bbox 是 1000×1000 归一化坐标；middle.json span 是 PDF 点
-
-## 开发记录
-
-三轮实测数据与错误清单见 `docs/ROUND1_REPORT.md`、第 3 层交接说明见 `docs/HANDOFF.md`。
 
 ## License
 
