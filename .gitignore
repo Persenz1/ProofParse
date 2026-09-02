@@ -1,0 +1,31 @@
+# ---- 本地产物（勿上传）----
+# 解析输出（含论文全文，版权敏感）
+output/
+# 测试论文 PDF（版权敏感）
+test_pdfs/
+# 本地 wheel 包
+wheels/
+# 打包产物，发布时走 Release
+*.skill
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# ---- 终审工作文件 ----
+*.bak
+worklist*.json
+verdicts*.json
+
+# ---- 密钥 ----
+.env
+.env.*
+!.env.example
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
