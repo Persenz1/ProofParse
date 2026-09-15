@@ -113,6 +113,8 @@ def process_pdf(pdf_path: Path, output_root: Path, parser_name: str = "mineru",
     work_dir = Path(scratch) / pdf_path.stem / "raw" if scratch else out_dir / "_mineru_raw"
 
     # 1) 解析
+    device = config.resolve_device()
+    print(f"[device] {device} | Python: {sys.executable}", flush=True)
     parser = _PARSERS[parser_name]()
     doc: Document = parser.parse(pdf_path, work_dir, asset_dir=out_dir)
     shutil.copy2(pdf_path, out_dir / "source.pdf")
@@ -148,7 +150,7 @@ def process_pdf(pdf_path: Path, output_root: Path, parser_name: str = "mineru",
     if formula_check:
         try:
             from .formula.double_check import double_check
-            double_check(pdf_path, out_dir, kept, qc, device=config.MINERU_DEVICE, work_dir=work_dir)
+            double_check(pdf_path, out_dir, kept, qc, device=device, work_dir=work_dir)
         except Exception as e:  # 双识别失败不中断主流程
             qc["formula_check"] = {"error": str(e)}
     else:

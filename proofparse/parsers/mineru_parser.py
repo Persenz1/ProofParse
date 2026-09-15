@@ -54,7 +54,7 @@ class MinerUParser(DocumentParser):
             "-p", str(pdf_path),
             "-o", str(work_dir),
             "-b", config.MINERU_BACKEND,
-            "-d", config.MINERU_DEVICE,
+            "-d", config.resolve_device(),
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0:

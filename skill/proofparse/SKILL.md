@@ -17,7 +17,10 @@ description: 面向任意 agent/harness 的本地论文 PDF 提取与视觉复�
 ```
 
 它只读检测，不安装、不下载。若用户指定解释器，使用该解释器；不要默认当前 Python 就是解析环境。
-展示检测到的 Python、GPU、已装依赖、模型缓存路径。缓存根存在不代表所有权重完整。
+展示检测到的 Python、GPU、已装依赖、模型缓存路径，以及 requested_device / selected_device。
+默认 auto：当前 Python 的 PyTorch 可用 CUDA 才选 cuda，否则选 cpu；核显不等于 CUDA。
+用户可显式设置 PROOFPARSE_MINERU_DEVICE=cpu 或 cuda，手动选择不会被自动覆盖。
+未安装 PyTorch 时选择 cpu 只是设备建议，不表示解析依赖已齐全。缓存根存在不代表所有权重完整。
 
 **在用户选择之前，不运行 pip/conda 安装、模型下载器或可能触发首次权重下载的解析命令。**
 向用户明确展示以下选项，让其选择一次：

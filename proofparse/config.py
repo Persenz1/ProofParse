@@ -21,7 +21,19 @@ def mineru_exe() -> str:
 
 # MinerU 运行参数
 MINERU_BACKEND = os.environ.get("PROOFPARSE_MINERU_BACKEND", "pipeline")
-MINERU_DEVICE = os.environ.get("PROOFPARSE_MINERU_DEVICE", "cuda")
+MINERU_DEVICE = os.environ.get("PROOFPARSE_MINERU_DEVICE", "auto")
+
+
+def resolve_device(requested: str | None = None) -> str:
+    """延迟检测当前解释器的 CUDA 能力；阅读资料时不加载 PyTorch。"""
+    choice = (requested or os.environ.get("PROOFPARSE_MINERU_DEVICE", "auto")).strip().lower()
+    if choice != "auto":
+        return choice  # 尊重显式设备，不静默改变用户配置。
+    try:
+        import torch
+    except (ImportError, OSError):
+        return "cpu"
+    return "cuda" if torch.cuda.is_available() else "cpu"
 
 # 输出根目录（可用命令行 -o 覆盖）
 DEFAULT_OUTPUT_ROOT = Path(os.environ.get("PROOFPARSE_OUTPUT", "output"))

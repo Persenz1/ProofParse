@@ -15,6 +15,20 @@ def main():
         try: versions[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError: versions[name] = None
     gpu = None
+    cuda_available = False
+    torch_probe_error = None
+    if versions["torch"]:
+        try:
+            result = subprocess.run([sys.executable, "-B", "-c",
+                "import torch; print('cuda' if torch.cuda.is_available() else 'cpu')"],
+                capture_output=True, text=True, timeout=30)
+            cuda_available = result.returncode == 0 and result.stdout.strip() == "cuda"
+            if result.returncode:
+                torch_probe_error = result.stderr.strip()[-500:]
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            torch_probe_error = str(exc)
+    requested_device = os.environ.get("PROOFPARSE_MINERU_DEVICE", "auto").strip().lower()
+    selected_device = ("cuda" if cuda_available else "cpu") if requested_device == "auto" else requested_device
     exe = shutil.which("nvidia-smi")
     if exe:
         try:
@@ -33,6 +47,8 @@ def main():
         except (OSError,ValueError): pass
     print(json.dumps({"python":sys.executable,"python_version":platform.python_version(),
                       "os":platform.platform(),"packages":versions,"gpu":gpu,
+                      "requested_device":requested_device,"selected_device":selected_device,
+                      "torch_cuda_available":cuda_available,"torch_probe_error":torch_probe_error,
                       "conda":shutil.which("conda"),"configured_models":caches,
                       "huggingface_cache":os.environ.get("HF_HOME",str(Path.home()/'.cache/huggingface')),
                       "modelscope_cache":os.environ.get("MODELSCOPE_CACHE",str(Path.home()/'.cache/modelscope')),

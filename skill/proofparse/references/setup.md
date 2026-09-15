@@ -22,7 +22,10 @@
 ## 新环境
 
 建议独立 Python 3.12 环境。环境名和安装位置由用户选择，不修改或删除现有环境。
-GPU 用户先确认驱动兼容的 PyTorch 构建；CPU 用户选择 CPU 构建，并设置 PROOFPARSE_MINERU_DEVICE=cpu。
+GPU 用户先确认驱动兼容的 PyTorch 构建；CPU 用户选择 CPU 构建。
+设备默认 auto：以当前 Python 的 torch.cuda.is_available() 为准，有 CUDA 则用 cuda，否则用 cpu。
+可用 PROOFPARSE_MINERU_DEVICE=cpu/cuda 手动指定，不自动覆盖显式选择。
+安装完成后再次运行检测脚本，向用户展示解释器、实际选择设备和模型缓存位置。
 不要把开发机 CUDA 版本当作所有用户默认值。
 
 MinerU 会使用版面、OCR、公式、表格等模型。首次运行可能自动下载权重。
@@ -44,7 +47,7 @@ MINERU_FORMULA_CH_SUPPORT 会影响第一路公式模型选择，不能默认双
 |---|---|
 | PROOFPARSE_PYTHON | 选择解析器所在 Python；CLI 本身也应由该解释器启动 |
 | MINERU_EXE | 明确指定 MinerU CLI 路径 |
-| PROOFPARSE_MINERU_DEVICE | cuda / cpu |
+| PROOFPARSE_MINERU_DEVICE | auto（默认）/ cuda / cpu |
 | PROOFPARSE_FORMULA_MODEL | pp_formulanet_plus_m / unimernet_small |
 | PROOFPARSE_WORK_DIR | 本次临时模型输出目录；未设置时原始缓存留在论文输出目录 |
 | MINERU_TOOLS_CONFIG_JSON | 已有 MinerU 配置路径 |
