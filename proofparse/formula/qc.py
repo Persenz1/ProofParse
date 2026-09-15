@@ -43,7 +43,32 @@ def check_latex(latex: str) -> list[str]:
     if re.search(r"(.)\1{9,}", latex):
         problems.append("suspicious_repetition")
 
-    return problems
+    # A delimiter pair cannot cross a brace group or alignment cell, even
+    # when the total numbers of left/right and braces happen to match.
+    depth = 0
+    delimiters = []
+    for token in re.findall(r'\\(?:begin|end)\s*\{[^}]*\}|\\left(?![a-zA-Z])|\\right(?![a-zA-Z])|\\[a-zA-Z]+|\\.|[{}&]', latex):
+        if token.startswith(r'\begin'):
+            depth += 100
+        elif token.startswith(r'\end'):
+            depth -= 100
+        elif token == '{':
+            depth += 1
+        elif token == '}':
+            if delimiters and delimiters[-1] == depth:
+                problems.append('delimiter_crosses_group')
+            depth -= 1
+            if depth < 0:
+                problems.append('unexpected_close_brace')
+        elif token == r'\left':
+            delimiters.append(depth)
+        elif token == r'\right':
+            if not delimiters or delimiters.pop() != depth:
+                problems.append('delimiter_scope_mismatch')
+        elif token in ('&', r'\\') and depth in delimiters:
+            problems.append('delimiter_crosses_alignment')
+
+    return list(dict.fromkeys(problems))
 
 
 def run_qc(doc: Document, kept_blocks, dropped_blocks, filter_stats: dict,

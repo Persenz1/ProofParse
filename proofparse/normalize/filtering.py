@@ -49,7 +49,7 @@ def apply_filtering(blocks: list[Block]) -> tuple[list[Block], list[Block], dict
             dropped.append(b)
             truncated = True
             continue
-        if b.type == BLOCK_DROPPED:
+        if b.type == BLOCK_DROPPED or b.extra.get("merged_into"):
             dropped.append(b)
             continue
         kept.append(b)

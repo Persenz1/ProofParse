@@ -19,6 +19,36 @@ from proofparse.review.agent import FileVLM
 
 
 class CoreTests(unittest.TestCase):
+    def test_delimiters_must_stay_in_same_scope(self):
+        from proofparse.formula.qc import check_latex
+        self.assertTrue(check_latex(r'\begin{array}{ll}{\left(0}&{1\right)}\end{array}'))
+        self.assertTrue(check_latex(r'\begin{array}{ll}\left(0&1\right)\end{array}'))
+        self.assertEqual(check_latex(r'\left(\begin{array}{ll}0&1\\2&3\end{array}\right)'),[])
+
+    def test_orphan_equation_number_and_correction(self):
+        from proofparse.normalize.coverage import check_orphan_equation_numbers
+        from proofparse.review.collect import _collect_from_qc
+        number = Block('paragraph', '(4)', page=0, bbox=[906,640,928,652], block_id='eq4')
+        warnings = check_orphan_equation_numbers([number])
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]['bbox'][0], 0)
+        equation = Block('equation', 'x=y', page=0, bbox=[60,639,300,653])
+        self.assertEqual(check_orphan_equation_numbers([number,equation]), [])
+        self.dump('document.json', {'blocks':[number.to_dict() | {'in_markdown':True}]})
+        item = _collect_from_qc('paper', {'warnings':warnings})[0]
+        latex = r'\delta W_{\mathrm{in}}=-M\delta\alpha\tag{4}'
+        self.assertEqual(apply_to_document(self.paper,item,{'choice':'custom','confidence':1,'corrected_latex':latex}), 'applied')
+        saved = json.loads((self.paper/'document.json').read_text())['blocks'][0]
+        self.assertEqual(saved['type'], 'equation')
+        from proofparse.review.apply import _load_document
+        doc, _ = _load_document(self.paper)
+        self.assertIn('$$\n'+latex+'\n$$', build_markdown(doc, doc.blocks))
+
+    def test_figure_caption_below_image(self):
+        figure = Block('figure','',extra={'asset':'images/a.png','caption':'Fig. 1. Example.'})
+        md = build_markdown(Document(),[figure],delivery=True)
+        self.assertLess(md.index('![原图]'),md.index('Fig. 1.'))
+
     def setUp(self):
         root = os.environ.get("PROOFPARSE_TEST_TMP")
         self.tmp = tempfile.TemporaryDirectory(dir=root)
@@ -161,6 +191,14 @@ class CoreTests(unittest.TestCase):
         summary=run_review(self.root,FileVLM(path),verbose=False)
         self.assertEqual(summary['paper']['status'],'still_open')
         self.assertEqual([i.kind for i in collect(self.root)],['page_completeness'])
+
+    def test_caption_edit_does_not_verify_table_values(self):
+        self.dump('document.json',{'blocks':[{'block_id':'t','type':'table','content':'unverified table',
+                   'page':0,'extra':{'asset':'crop.png'},'in_markdown':True}]})
+        self.dump('qc.json',{'visual_review':[{'page':0,'block_id':'t','review_asset':'crop.png'}]})
+        item=collect(self.root)[0]
+        result=apply_to_document(self.paper,item,{'choice':'custom','confidence':.95,'caption':'Table 1. Correct title.'})
+        self.assertEqual(result,'applied:recheck_table')
 
 
 if __name__ == "__main__": unittest.main()

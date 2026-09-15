@@ -81,6 +81,17 @@ paper_name/
 Markdown 不删除参考文献和附录。未验证的表格默认显示原图，确认后生成 Markdown 或有限 HTML，原图仍保留。
 公式相似度仅用于排序；不删除上下标分组、矩阵行列、字体差异后判定正确。
 
+## 最终交付
+
+上面的目录是解析与复查工作目录。用户最终只需接收 Markdown 和图片：
+
+```text
+python -m proofparse.export output/papers -o delivery
+```
+
+每篇得到 `<论文名>.md` 与 `images/`，Markdown 用相对路径直接嵌入对应图片。没有 JSON、PDF 或日志；整个论文目录可一起移动。
+工作文件保留供续跑与核查。导出不会把未完成的复查标记为通过。
+
 ## Agent skill 与测试
 
 `skill/proofparse/` 或生成的 `proofparse.skill` 是便携 skill。

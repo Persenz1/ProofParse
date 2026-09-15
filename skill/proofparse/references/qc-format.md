@@ -41,3 +41,5 @@ review_summary.json 的 status：auto_pass（仅无待检查内容）、reviewed
 新资料包都有逐页检查任务，未完成视觉检查时不会直接 auto_pass。
 导入退出码 1 代表仍有未解决项，0 代表全部检查通过；2 为参数/文件配置错误。
 API 缓存保存成功响应、usage 和不确定请求状态。调用数量上限不是严格费用封顶。
+
+visual custom 可用 caption 修正完整图注/表题；仅经看图确认的出版商标识可用 ignore_as: publisher_mark 从交付中排除，不能用它隐藏识别失败的科研内容。

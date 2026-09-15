@@ -125,7 +125,7 @@ def check_coverage(pdf_path: Path, blocks: list[Block]) -> dict:
     chunk_map = _assign_chunks(pages_norm, blocks)
 
     fixes: list[dict] = []
-    warnings: list[dict] = []
+    warnings: list[dict] = check_orphan_equation_numbers(blocks)
 
     for b in blocks:
         if b.type != BLOCK_PARAGRAPH or not b.content:
@@ -177,3 +177,25 @@ def check_coverage(pdf_path: Path, blocks: list[Block]) -> dict:
                              "likely_cause": "unassigned_source"})
 
     return {"fixes": fixes, "warnings": warnings}
+
+
+def check_orphan_equation_numbers(blocks: list[Block]) -> list[dict]:
+    """Flag a right-aligned equation number with no equation on its row.
+
+    This also works without a PDF text layer. The crop includes the missing
+    left-hand expression; the number's own tiny bbox would hide the omission.
+    """
+    warnings = []
+    for b in blocks:
+        if (b.type != BLOCK_PARAGRAPH or not b.bbox or b.extra.get('merged_into')
+                or b.bbox[0] < 700 or not re.fullmatch(r'\(\s*\d+[a-z]?\s*\)', b.content.strip())):
+            continue
+        y = (b.bbox[1] + b.bbox[3]) / 2
+        if any(other.page == b.page and other.type == 'equation' and other.bbox
+               and other.bbox[1]-5 <= y <= other.bbox[3]+5 for other in blocks):
+            continue
+        warnings.append({'type': 'orphan_equation_number', 'page': b.page,
+                         'bbox': [0, max(0, b.bbox[1]-8), b.bbox[2], min(1000, b.bbox[3]+8)],
+                         'block_id': b.block_id, 'parser_text': b.content, 'missing_text': '',
+                         'likely_cause': 'orphan_equation_number', 'status': 'needs_review'})
+    return warnings

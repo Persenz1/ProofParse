@@ -113,7 +113,8 @@ def collect(output_root: Path, skip_done: bool = True) -> list[ReviewItem]:
                                                 for b in previous[-1:] + following[:1]]
                 it.extra["blocks"] = [
                     {k: b.get(k) for k in ("block_id", "type", "content", "bbox", "in_markdown")}
-                    | {"caption": b.get("extra", {}).get("caption", ""), "footnote": b.get("extra", {}).get("footnote", "")}
+                    | {"caption": b.get("extra", {}).get("caption", ""), "footnote": b.get("extra", {}).get("footnote", ""),
+                       "merged_into": b.get("extra", {}).get("merged_into"), "excluded_as": b.get("extra", {}).get("excluded_as")}
                     for b in doc["blocks"] if b.get("page") == it.page]
             block = blocks.get(it.block_id)
             if block:

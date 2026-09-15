@@ -175,6 +175,20 @@ def apply_to_document(paper_dir: Path, item: ReviewItem, verdict: dict) -> str:
     if idx is None: return "skipped:block_id_missing"
     block = doc.blocks[idx]
     if block.content != item.extra.get("target_content", block.content): return "skipped:stale_target"
+    if item.kind == "visual" and verdict.get("caption") is not None:
+        if choice != "custom" or not isinstance(verdict["caption"],str) or not verdict["caption"].strip():
+            return "skipped:invalid_caption"
+        block.extra["caption"] = verdict["caption"]
+        if not verdict.get("corrected_latex") and not verdict.get("crop_bbox") and not verdict.get("ignore_as"):
+            _save_document(paper_dir, doc, block_dicts)
+            return "applied:recheck_table" if block.type == "table" and not block.extra.get("structure_verified") else "applied"
+    if item.kind == "visual" and verdict.get("ignore_as"):
+        if choice != "custom" or verdict["ignore_as"] != "publisher_mark":
+            return "skipped:unsupported_exclusion"
+        block_dicts[idx]["in_markdown"] = False
+        block.extra["excluded_as"] = "publisher_mark"
+        _save_document(paper_dir, doc, block_dicts)
+        return "applied"
     if item.kind == "visual" and verdict.get("crop_bbox") is not None:
         bb = verdict["crop_bbox"]
         if (choice != "custom" or not isinstance(bb,list) or len(bb) != 4
@@ -211,6 +225,10 @@ def apply_to_document(paper_dir: Path, item: ReviewItem, verdict: dict) -> str:
     else:
         if block.content != item.candidate_a: return "skipped:candidate_not_full_target"
         block.content = corrected
+        if item.likely_cause == 'orphan_equation_number':
+            block.type = 'equation'
+            block.bbox = item.bbox
+            block_dicts[idx]['bbox'] = item.bbox
     _save_document(paper_dir, doc, block_dicts)
     return "applied"
 
@@ -228,7 +246,7 @@ def write_verdicts(paper_dir: Path, results: list[tuple[ReviewItem, Optional[dic
     data = json.loads((paper_dir / "document.json").read_text(encoding="utf-8"))
     visuals = {x.get("block_id"):x for x in qc.get("visual_review", [])}
     for b in data["blocks"]:
-        if b["type"] in ("figure", "table", "unknown"):
+        if b["type"] in ("figure", "table", "unknown") and b.get("in_markdown"):
             entry = visuals.get(b.get("block_id"))
             if entry is None:
                 entry = {"block_id":b.get("block_id"), "page":b.get("page")}

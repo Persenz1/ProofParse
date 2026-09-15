@@ -10,6 +10,7 @@ def main(argv=None):
     ap.add_argument("--page", type=int, help="Zero-based source page")
     ap.add_argument("--block", help="Stable block ID")
     ap.add_argument("--kind", help="Worklist kind filter")
+    ap.add_argument("--instructions", action="store_true", help="Print shared review instructions without task data")
     ap.add_argument("--paper", help="Worklist paper directory name filter")
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--limit", type=int, default=5)
@@ -19,6 +20,9 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.path.is_file():
         data = json.loads(args.path.read_text(encoding="utf-8"))
+        if args.instructions:
+            print(data["instructions"])
+            return 0
         items = data["items"]
         if args.kind: items = [x for x in items if x["kind"] == args.kind]
         if args.paper: items = [x for x in items if x["uid"].split("::")[0] == args.paper]

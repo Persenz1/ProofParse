@@ -25,7 +25,7 @@ def _clean_inline(text: str) -> str:
     return text.strip()
 
 
-def build_markdown(doc: Document, blocks) -> str:
+def build_markdown(doc: Document, blocks, *, delivery: bool = False) -> str:
     md = doc.metadata
     lines: list[str] = []
 
@@ -45,7 +45,8 @@ def build_markdown(doc: Document, blocks) -> str:
     lines.append("")
 
     for b in blocks:
-        lines.append(f"<!-- {b.block_id} page={(b.page + 1) if b.page is not None else '?'} -->")
+        if not delivery:
+            lines.append(f"<!-- {b.block_id} page={(b.page + 1) if b.page is not None else '?'} -->")
         if b.type == BLOCK_TITLE:
             lines.extend([f"# {_clean_inline(b.content)}", ""])
             continue
@@ -55,23 +56,32 @@ def build_markdown(doc: Document, blocks) -> str:
             lines.append(f"{hashes} {_clean_inline(b.content)}")
             lines.append("")
         elif b.type == BLOCK_EQUATION:
+            if delivery and b.extra.get('delivery_fallback'):
+                lines.extend([f"![公式原图]({b.extra['delivery_fallback']})", "",
+                              "[公式 LaTeX 结构异常，暂以原图保留，待复查。]", ""])
+                continue
             lines.append("$$")
             lines.append(b.content)
             lines.append("$$")
             lines.append("")
         elif b.type in ("figure", "table", "unknown"):
             caption = b.extra.get("caption", "")
-            if caption:
+            if caption and b.type != "figure":
                 lines.extend([caption, ""])
             if b.type == "table" and b.extra.get("structure_verified"):
                 from .tables import render_table
                 lines.extend([render_table(b.content), ""])
             if b.extra.get("asset"):
-                lines.extend([f"[{'表格原图' if b.type == 'table' else '原图'} {b.block_id}]({b.extra['asset']})", ""])
+                label = '表格原图' if b.type == 'table' else '原图'
+                prefix = '!' if delivery else ''
+                lines.extend([f"{prefix}[{label}]({b.extra['asset']})" if delivery else f"[{label} {b.block_id}]({b.extra['asset']})", ""])
             else:
                 lines.extend(["[原图缺失，需复查]", ""])
+            if caption and b.type == "figure":
+                lines.extend([caption, ""])
             if b.type == "table" and not b.extra.get("structure_verified"):
-                lines.extend(["[表格结构尚未视觉确认；请读取原图。候选保存在 document.json。]", ""])
+                note = "[表格以原图保留，结构尚未确认。]" if delivery else "[表格结构尚未视觉确认；请读取原图。候选保存在 document.json。]"
+                lines.extend([note, ""])
             if b.extra.get("footnote"):
                 lines.extend([b.extra["footnote"], ""])
         elif b.type == "code":

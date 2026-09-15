@@ -93,6 +93,10 @@ class MinerUParser(DocumentParser):
                 shutil.copy2(src, dst)
                 block.extra["asset"] = rel.as_posix()
 
+        middle = sorted(work_dir.rglob(f"{pdf_path.stem}_middle.json"))
+        if middle:
+            from ..normalize.figures import group_figures
+            group_figures(doc, json.loads(middle[0].read_text(encoding="utf-8")), pdf_path, asset_dir or work_dir.parent)
         doc.metadata = self._extract_metadata(doc.blocks)
         return doc
 

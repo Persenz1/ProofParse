@@ -30,7 +30,8 @@ def export_worklist(output_root: Path, path: Path, force: bool = False) -> int:
         "likely_cause": it.likely_cause,
         "candidate_A_parser": it.candidate_a,
         "candidate_B": it.candidate_b,
-        "input_hash": it.input_hash, "block_id": it.block_id, "context": it.extra,
+        "input_hash": it.input_hash, "block_id": it.block_id,
+        "context": {k:v for k,v in it.extra.items() if k != "target_content" or v != it.candidate_a},
     } for it in items]
     Path(path).write_text(json.dumps({"schema_version": 2, "instructions": REVIEW_INSTRUCTIONS, "items": rows}, ensure_ascii=False, indent=2),
                           encoding="utf-8")

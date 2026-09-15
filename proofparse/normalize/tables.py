@@ -49,7 +49,8 @@ def render_table(html: str) -> str:
     p = TableParser()
     p.feed(html)
     if (p.complex or not p.rows or not p.rows[0]
-            or any(not re.search(r"[A-Za-z\u4e00-\u9fff]", c) for c in p.rows[0])
+            or not any(re.search(r"[A-Za-z\u4e00-\u9fff]", c) for c in p.rows[0])
+            or any(c.strip() and not re.search(r"[A-Za-z\u4e00-\u9fff]", c) for c in p.rows[0])
             or any(len(r) != len(p.rows[0]) for r in p.rows)):
         return ''.join(p.html)
     rows = ['| ' + ' | '.join(c.replace('|', '\\|').replace('\n', ' ') for c in r) + ' |' for r in p.rows]
