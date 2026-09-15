@@ -61,11 +61,13 @@ def run_qc(doc: Document, kept_blocks, dropped_blocks, filter_stats: dict,
         if problems:
             warnings.append({
                 "id": f"eq_{i}",
+                "block_id": b.block_id,
                 "type": "latex_sanity",
                 "page": b.page,
                 "bbox": b.bbox,
                 "problems": problems,
                 "content_preview": b.content[:200],
+                "parser_text": b.content,
                 "status": "needs_review",
             })
 
@@ -77,11 +79,13 @@ def run_qc(doc: Document, kept_blocks, dropped_blocks, filter_stats: dict,
         if hits:
             warnings.append({
                 "id": f"glyph_{i}",
+                "block_id": b.block_id,
                 "type": "suspect_glyph",
                 "page": b.page,
                 "bbox": b.bbox,
                 "problems": hits[:5],
                 "content_preview": b.content[:200],
+                "parser_text": b.content,
                 "status": "needs_review",
             })
 

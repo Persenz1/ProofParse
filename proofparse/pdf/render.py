@@ -6,16 +6,24 @@
 from __future__ import annotations
 
 from pathlib import Path
+from functools import lru_cache
 
 import pypdfium2 as pdfium
 
 
+@lru_cache(maxsize=2)
+def _page_image(path: str, stamp: int, page_idx: int, scale: float):
+    with pdfium.PdfDocument(path) as pdf:
+        page = pdf[page_idx]
+        size = page.get_size()
+        img = page.render(scale=scale).to_pil().copy()
+        page.close()
+        return img, size
+
+
 def render_crop(pdf_path: Path, page_idx: int, bbox1000: list[float],
                 out_path: Path, scale: float = 3.0, pad: int = 14) -> Path:
-    pdf = pdfium.PdfDocument(str(pdf_path))
-    page = pdf[page_idx]
-    w, h = page.get_size()
-    img = page.render(scale=scale).to_pil()
+    img, (w, h) = _page_image(str(Path(pdf_path).resolve()), Path(pdf_path).stat().st_mtime_ns, page_idx, scale)
     x1 = bbox1000[0] / 1000 * w * scale
     y1 = bbox1000[1] / 1000 * h * scale
     x2 = bbox1000[2] / 1000 * w * scale
@@ -26,16 +34,13 @@ def render_crop(pdf_path: Path, page_idx: int, bbox1000: list[float],
     ))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     crop.save(str(out_path))
-    pdf.close()
     return out_path
 
 
 def render_page(pdf_path: Path, page_idx: int, out_path: Path,
                 scale: float = 1.5) -> Path:
     """无 bbox 的警告（如整句丢失）渲染整页供人工定位。"""
-    pdf = pdfium.PdfDocument(str(pdf_path))
-    img = pdf[page_idx].render(scale=scale).to_pil()
+    img, _ = _page_image(str(Path(pdf_path).resolve()), Path(pdf_path).stat().st_mtime_ns, page_idx, scale)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(str(out_path))
-    pdf.close()
     return out_path

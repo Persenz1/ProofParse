@@ -34,6 +34,7 @@ class Block:
     level: int = 0                  # heading 层级（1 起），其它块为 0
     source: str = ""                # 例如 "mineru_pipeline"
     extra: dict[str, Any] = field(default_factory=dict)  # parser 原始附加信息（img_path 等）
+    block_id: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)

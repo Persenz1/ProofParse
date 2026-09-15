@@ -49,7 +49,7 @@ def _load_document(paper_dir: Path) -> tuple[Document, list[dict]]:
         doc.blocks.append(Block(
             type=b["type"], content=b.get("content", ""), page=b.get("page"),
             bbox=b.get("bbox"), level=b.get("level", 0),
-            source=b.get("source", ""), extra=b.get("extra") or {},
+            source=b.get("source", ""), extra=b.get("extra") or {}, block_id=b.get("block_id", ""),
         ))
     return doc, data["blocks"]
 
@@ -65,8 +65,11 @@ def _save_document(paper_dir: Path, doc: Document, block_dicts: list[dict]) -> N
         shutil.copy2(paper_dir / "document.json", bak)
     for b_dict, b_obj in zip(block_dicts, doc.blocks):
         b_dict["content"] = b_obj.content
+        b_dict["type"] = b_obj.type
+        b_dict["extra"] = b_obj.extra
     data = json.loads((paper_dir / "document.json").read_text(encoding="utf-8"))
     data["blocks"] = block_dicts
+    data["metadata"] = vars(doc.metadata)
     (paper_dir / "document.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -84,50 +87,130 @@ def rebuild_markdown(paper_dir: Path) -> Path:
 def apply_to_document(paper_dir: Path, item: ReviewItem, verdict: dict) -> str:
     """把裁决应用到 document.json 块内容。返回 applied / confirmed / skipped:<原因>。"""
     choice = verdict["choice"]
-    if choice == "parser":
-        return "confirmed"  # 解析器本就正确，无需改动
-
-    corrected = verdict.get("corrected_latex")
-    if choice == "ocr":
-        corrected = item.candidate_b
-    if not corrected:
-        return "skipped:no_corrected_text"
-    if verdict.get("confidence", 0.0) < APPLY_CONFIDENCE:
-        return f"skipped:confidence<{APPLY_CONFIDENCE}"
-
+    if choice == "open": return "skipped:open"
+    if verdict.get("confidence", 0) < APPLY_CONFIDENCE: return "skipped:low_confidence"
     doc, block_dicts = _load_document(paper_dir)
+    by_id = {b.block_id: i for i, b in enumerate(doc.blocks)}
+    if item.kind == "page_completeness":
+        expected = item.extra["blocks"]
+        current = [b for b in doc.blocks if b.page == item.page]
+        if [(b.block_id, b.content) for b in current] != [(b["block_id"], b["content"]) for b in expected]:
+            return "skipped:stale_page"
+        if choice == "parser": return "confirmed"
+        if choice != "custom": return "skipped:page_requires_edits"
+        edits, inserts = verdict.get("edits", []), verdict.get("inserts", [])
+        metadata = verdict.get("metadata", {})
+        if not edits and not inserts and not metadata: return "skipped:no_edits"
+        if metadata:
+            old = json.loads((paper_dir / "document.json").read_text(encoding="utf-8")).get("metadata", {})
+            if item.page != 0 or old != item.extra.get("metadata"):
+                return "skipped:stale_metadata"
+            for key,value in metadata.items():
+                valid = ((key in ("title","doi") and isinstance(value,str))
+                         or (key == "year" and isinstance(value,int))
+                         or (key == "authors" and isinstance(value,list) and all(isinstance(a,str) for a in value)))
+                if not valid: return "skipped:invalid_metadata"
+        seen = set()
+        for edit in edits:
+            idx = by_id.get(edit.get("block_id"))
+            if idx is None or idx in seen: return "skipped:invalid_edit_target"
+            seen.add(idx)
+            block = doc.blocks[idx]
+            if block.page != item.page or block.content != edit.get("old_content"):
+                return "skipped:stale_edit"
+            if block.type not in ("paragraph", "heading", "title", "equation", "list", "code"):
+                return "skipped:use_visual_task"
+            if not isinstance(edit.get("content"), str) or not edit["content"].strip():
+                return "skipped:empty_edit"
+            if edit.get("type", block.type) not in ("paragraph","heading","title","equation","list","code"):
+                return "skipped:invalid_reclassification"
+            if "after_block_id" in edit:
+                anchor = edit["after_block_id"]
+                if anchor is not None and (anchor == block.block_id or anchor not in by_id or doc.blocks[by_id[anchor]].page != item.page):
+                    return "skipped:invalid_move_anchor"
+        for insert in inserts:
+            anchor = insert.get("after_block_id")
+            if anchor is not None and (anchor not in by_id or doc.blocks[by_id[anchor]].page != item.page):
+                return "skipped:invalid_anchor"
+            if insert.get("type") not in ("paragraph", "heading", "equation", "list", "code", "figure", "table"):
+                return "skipped:invalid_insert_type"
+            bb = insert.get("bbox")
+            if (not isinstance(bb, list) or len(bb) != 4 or not all(isinstance(x, (int, float)) and 0 <= x <= 1000 for x in bb)
+                    or bb[0] >= bb[2] or bb[1] >= bb[3] or not isinstance(insert.get("content"), str)
+                    or (not insert["content"].strip() and insert["type"] not in ("figure", "table"))):
+                return "skipped:invalid_insert"
+        for key,value in metadata.items(): setattr(doc.metadata,key,value)
+        for edit in edits:
+            block = doc.blocks[by_id[edit["block_id"]]]
+            block.content = edit["content"]
+            block.type = edit.get("type",block.type)
+        for edit in edits:
+            if "after_block_id" not in edit: continue
+            index = next(i for i,b in enumerate(doc.blocks) if b.block_id == edit["block_id"])
+            block, raw = doc.blocks.pop(index), block_dicts.pop(index)
+            anchor = edit["after_block_id"]
+            pos = (next(i+1 for i,b in enumerate(doc.blocks) if b.block_id == anchor) if anchor
+                   else next((i for i,b in enumerate(doc.blocks) if b.page is not None and b.page >= item.page),len(doc.blocks)))
+            doc.blocks.insert(pos,block)
+            block_dicts.insert(pos,raw)
+        import uuid
+        # 逆序插入，使同一 anchor 下按提供顺序排列。
+        for insert in reversed(inserts):
+            anchor = insert.get("after_block_id")
+            pos = next((i+1 for i,b in enumerate(doc.blocks) if b.block_id == anchor), None) if anchor else None
+            if pos is None: pos = next((i for i,b in enumerate(doc.blocks) if b.page is not None and b.page >= item.page),len(doc.blocks))
+            block = Block(type=insert["type"], content=insert["content"], page=item.page,
+                          bbox=insert["bbox"], block_id="insert_"+uuid.uuid4().hex[:12], source="visual_review")
+            if block.type in ("figure", "table"):
+                from ..pdf.render import render_crop
+                rel = f"assets/{block.block_id}.png"
+                render_crop(paper_dir / doc.source_pdf, item.page, block.bbox, paper_dir / rel)
+                block.extra = {"asset":rel, "caption":insert.get("caption", ""), "structure_verified":False}
+            doc.blocks.insert(pos, block)
+            block_dicts.insert(pos, block.to_dict() | {"in_markdown": True})
+        _save_document(paper_dir, doc, block_dicts)
+        return "applied:recheck_page"
 
-    if item.kind == KIND_DISPLAY:
-        idx = item.block_index
-        if idx is None or idx >= len(doc.blocks):
-            return "skipped:block_index_missing"
-        doc.blocks[idx].content = corrected.strip()
-    elif item.kind == KIND_INLINE:
-        pat = _flex_pattern(item.candidate_a)
-        hit = False
-        for b in doc.blocks:
-            if b.page != item.page or not b.content:
-                continue
-            if pat.search(b.content):
-                b.content = pat.sub(lambda m: corrected, b.content, count=1)
-                hit = True
-                break
-        if not hit:
-            return "skipped:span_not_found"
-    else:  # KIND_TEXT：段落前缀替换
-        prefix = item.candidate_a.strip()
-        pat = _flex_pattern(prefix)
-        hit = False
-        for b in doc.blocks:
-            if b.page != item.page or not b.content:
-                continue
-            if _norm(b.content).startswith(_norm(prefix)[:40]):
-                b.content = pat.sub(lambda m: corrected, b.content, count=1)
-                hit = True
-                break
-        if not hit:
-            return "skipped:paragraph_not_found"
-
+    idx = by_id.get(item.block_id)
+    if idx is None: return "skipped:block_id_missing"
+    block = doc.blocks[idx]
+    if block.content != item.extra.get("target_content", block.content): return "skipped:stale_target"
+    if item.kind == "visual" and verdict.get("crop_bbox") is not None:
+        bb = verdict["crop_bbox"]
+        if (choice != "custom" or not isinstance(bb,list) or len(bb) != 4
+                or not all(isinstance(x,(int,float)) and 0 <= x <= 1000 for x in bb)
+                or bb[0] >= bb[2] or bb[1] >= bb[3]):
+            return "skipped:invalid_crop"
+        from ..pdf.render import render_crop
+        rel = f"assets/{block.block_id}_recrop.png"
+        render_crop(paper_dir / doc.source_pdf, item.page, bb, paper_dir / rel)
+        block.extra["asset"] = rel
+        block.extra["structure_verified"] = False
+        block_dicts[idx]["bbox"] = bb
+        _save_document(paper_dir, doc, block_dicts)
+        return "applied:recheck_crop"
+    if choice == "parser":
+        if item.kind == "visual" and block.type == "table":
+            if not block.content: return "skipped:no_table_structure"
+            block.extra["structure_verified"] = True
+            _save_document(paper_dir, doc, block_dicts)
+            return "applied"
+        return "confirmed"
+    corrected = item.candidate_b if choice == "ocr" else verdict.get("corrected_latex")
+    if not isinstance(corrected, str) or not corrected.strip(): return "skipped:no_corrected_text"
+    if item.kind == KIND_INLINE:
+        if not item.candidate_a: return "skipped:empty_span"
+        matches = list(_flex_pattern(item.candidate_a).finditer(block.content))
+        if len(matches) != 1: return "skipped:ambiguous_span"
+        m = matches[0]
+        block.content = block.content[:m.start()] + corrected + block.content[m.end():]
+    elif item.kind == "visual":
+        if block.type != "table": return "skipped:recrop_required"
+        block.content = corrected
+        block.extra["structure_verified"] = True
+    else:
+        if block.content != item.candidate_a: return "skipped:candidate_not_full_target"
+        block.content = corrected
     _save_document(paper_dir, doc, block_dicts)
     return "applied"
 
@@ -142,6 +225,15 @@ def write_verdicts(paper_dir: Path, results: list[tuple[ReviewItem, Optional[dic
     qc_path = paper_dir / "qc.json"
     qc = json.loads(qc_path.read_text(encoding="utf-8"))
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    data = json.loads((paper_dir / "document.json").read_text(encoding="utf-8"))
+    visuals = {x.get("block_id"):x for x in qc.get("visual_review", [])}
+    for b in data["blocks"]:
+        if b["type"] in ("figure", "table", "unknown"):
+            entry = visuals.get(b.get("block_id"))
+            if entry is None:
+                entry = {"block_id":b.get("block_id"), "page":b.get("page")}
+                qc.setdefault("visual_review", []).append(entry)
+            entry.update(bbox=b.get("bbox"), review_asset=b.get("extra", {}).get("asset"))
 
     for item, verdict, error in results:
         entry = get_entry(qc, item.ref)
@@ -150,7 +242,9 @@ def write_verdicts(paper_dir: Path, results: list[tuple[ReviewItem, Optional[dic
             fv.update({"status": "error", "error": error})
         else:
             fv.update({
-                "status": "resolved" if verdict["choice"] in ("parser", "ocr", "custom") else "open",
+                "status": "resolved" if verdict.get("application") in ("applied", "confirmed") else "open",
+                "application": verdict.get("application"),
+                "input_hash": verdict.get("input_hash", item.input_hash),
                 **{k: verdict[k] for k in ("choice", "corrected_latex", "confidence", "reason", "model")},
             })
         entry["final_verdict"] = fv
@@ -171,8 +265,13 @@ def write_verdicts(paper_dir: Path, results: list[tuple[ReviewItem, Optional[dic
 def paper_status(qc: dict) -> str:
     """auto_pass / reviewed / still_open。"""
     pending = []
+    fc = qc.get("formula_check") or {}
+    if fc.get("error") or fc.get("status") == "not_run":
+        return "still_open"
+    for section in ("page_review", "visual_review"):
+        pending.extend(x.get("final_verdict") for x in qc.get(section, []))
     for w in qc.get("warnings", []):
-        if w.get("status") == "needs_review":
+        if w.get("status") == "needs_review" and w.get("type") != "unassigned_source":
             pending.append(w.get("final_verdict"))
     fc = qc.get("formula_check") or {}
     for kind in ("display", "inline"):
@@ -186,6 +285,6 @@ def paper_status(qc: dict) -> str:
             return "still_open"
         if fv.get("choice") not in ("parser", "ocr", "custom"):
             return "still_open"
-        if fv.get("choice") != "parser" and fv.get("confidence", 0) < APPLY_CONFIDENCE:
+        if fv.get("confidence", 0) < APPLY_CONFIDENCE:
             return "still_open"
     return "reviewed"

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "proofparse"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first research PDF -> Markdown pipeline with a three-layer QC funnel (MinerU + deterministic checks + formula double-check + multimodal final review)"
 readme = "README.md"
 license = { text = "MIT" }
@@ -12,11 +12,12 @@ requires-python = ">=3.12"
 dependencies = [
     "pypdf>=4",
     "pypdfium2>=4",
+    "pillow",
 ]
 
 [project.optional-dependencies]
 # Layer 2 公式双识别（GPU 推荐）；MinerU 本体请按 README 安装 mineru[pipeline]
-formula = ["torch", "transformers>=4.45", "pillow"]
+formula = ["numpy", "torch", "transformers>=4.45"]
 
 [project.scripts]
 proofparse = "proofparse.cli:main"

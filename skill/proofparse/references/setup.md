@@ -1,42 +1,55 @@
-# proofparse 环境与配置
+# 安装与模型选择
 
-## 运行环境
+先执行 SKILL.md 中的只读检测，并展示安装选项。以下命令是用户选择后的示例，不是自动执行清单。
 
-- Python 3.12 环境（Windows 上 MinerU 暂不支持 3.13）：
-  torch + CUDA，MinerU pipeline（`mineru[pipeline]`），PP-FormulaNet+ 公式双识别
-- GPU：RTX 4060 Ti 8GB 实测可行；`PROOFPARSE_MINERU_DEVICE=cpu` 可退化为 CPU（慢）
-- 解析吞吐：约 60-70 秒/篇（含模型加载；批处理只加载一次）
-- 公式双识别可用 `--no-formula-check` 跳过（快约 30%，但 REVIEW 清单会变粗）
+## 复用环境
+
+在已有 Python 环境、仓库目录中：
+
+```text
+<PY> -m pip install -e .
+```
+
+仅当还缺少解析器且用户同意下载：
+
+```text
+<PY> -m pip install "mineru[pipeline]==3.4.5" six
+```
+
+本次实际测试版本：Windows / Python 3.12.14 / MinerU 3.4.5 / pypdfium2 5.10.1。
+这是已测组合，不表示其他平台组合已验证。不同 MinerU 版本先核对输出字段再升级。
+
+## 新环境
+
+建议独立 Python 3.12 环境。环境名和安装位置由用户选择，不修改或删除现有环境。
+GPU 用户先确认驱动兼容的 PyTorch 构建；CPU 用户选择 CPU 构建，并设置 PROOFPARSE_MINERU_DEVICE=cpu。
+不要把开发机 CUDA 版本当作所有用户默认值。
+
+MinerU 会使用版面、OCR、公式、表格等模型。首次运行可能自动下载权重。
+第二公式识别使用 PP-FormulaNet+；需明确授权下载和缓存位置。
+MINERU_FORMULA_CH_SUPPORT 会影响第一路公式模型选择，不能默认双路必然是不同模型。
+
+模型来源、缓存目录和下载量应在安装前展示；未知下载量明确写待确认。
+已有权重尽量复用，不默认再下载一份。缓存目录不是每次任务结束应删除的临时目录。
+
+## 仅阅读/复查
+
+安装核心包即可，不安装 MinerU、PyTorch 或第二公式模型。需要已有 paper 资料包。
+从源代码目录也可直接用 Python -m 命令运行，但渲染需要 pypdfium2 和 Pillow。
+纯文本宿主可导出任务；视觉校验需要宿主本身支持图片或用户授权独立 API。
 
 ## 环境变量
 
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `PROOFPARSE_PYTHON` | 当前解释器 | 运行 MinerU/公式模型的 Python |
-| `MINERU_EXE` | 同上 Scripts/mineru.exe | MinerU CLI 路径 |
-| `PROOFPARSE_MINERU_DEVICE` | `cuda` | `cuda` / `cpu` |
-| `PROOFPARSE_VLM_BASE_URL` | — | 终审 VLM（OpenAI 兼容） |
-| `PROOFPARSE_VLM_API_KEY` | — | 终审 key，只走环境变量，勿写入文件 |
-| `PROOFPARSE_VLM_MODEL` | — | 必须是视觉模型 |
-| `PROOFPARSE_VLM_EXTRA_BODY` | `{}` | 厂商私有参数（JSON 字符串） |
-| `PROOFPARSE_VLM_TIMEOUT` | 120 | 秒 |
-| `PROOFPARSE_VLM_MAX_TOKENS` | 4096 | 思考模式会吃掉额度，务必关 |
+| 变量 | 用途 |
+|---|---|
+| PROOFPARSE_PYTHON | 选择解析器所在 Python；CLI 本身也应由该解释器启动 |
+| MINERU_EXE | 明确指定 MinerU CLI 路径 |
+| PROOFPARSE_MINERU_DEVICE | cuda / cpu |
+| PROOFPARSE_FORMULA_MODEL | pp_formulanet_plus_m / unimernet_small |
+| PROOFPARSE_WORK_DIR | 本次临时模型输出目录；未设置时原始缓存留在论文输出目录 |
+| MINERU_TOOLS_CONFIG_JSON | 已有 MinerU 配置路径 |
+| HF_HOME / MODELSCOPE_CACHE | 模型缓存根；需在运行前选择并核对上游配置 |
+| PROOFPARSE_REVIEW_API_KEY | 可选 API 密钥 |
 
-## 终审 VLM：MiMo 配置（实测可行）
-
-```bash
-export PROOFPARSE_VLM_BASE_URL="https://api.xiaomimimo.com/v1"
-export PROOFPARSE_VLM_API_KEY="sk-..."        # 按量付费 key
-export PROOFPARSE_VLM_MODEL="mimo-v2.5"      # 注意：mimo-v2.5-pro 是纯文本，不能看图
-export PROOFPARSE_VLM_EXTRA_BODY='{"thinking":{"type":"disabled"}}'
-```
-
-成本量级：79 条约 ¥0.1-0.5。任何 OpenAI 兼容视觉接口都能用
-（DashScope qwen-vl-max、GPT-4o 等），只要换这三个变量。
-
-## 复原与回滚
-
-- 终审首次改动前自动备份 `document.json` → `document.json.bak`
-- 想整体复原（如裁剪图生成逻辑升级后）：项目根 `restore_pristine.py <paper_dir>...`
-  从 `_mineru_raw` 缓存重建 document.json + md，保留 qc.json 裁决记录，
-  并用大边距重生成复核图（无 GPU、约 2 秒/篇）
+--no-formula-check 可以跳过第二公式模型，但状态会明确保留 not_run，不能宣称完整检查已通过。
+source.pdf、assets 和 review_assets 都是资料包功能所需文件；清理临时目录前确认交付不引用其中路径。

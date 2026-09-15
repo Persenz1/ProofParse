@@ -54,6 +54,8 @@ class FormulaOCR:
             mfd_list.append([{"label": "display_formula",
                               "bbox": [0, 0, w - 1, h - 1], "latex": ""}])
         results = self.model.batch_predict(mfd_list, crops, batch_size=batch_size)
+        if len(results) != len(crops):
+            raise RuntimeError(f"公式 OCR 返回数量不符：{len(results)}/{len(crops)}")
         return [items[0]["latex"] if items else "" for items in results]
 
     def unload(self) -> None:

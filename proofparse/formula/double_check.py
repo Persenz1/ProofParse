@@ -70,11 +70,11 @@ def _load_inline_spans(middle_json: Path) -> list[dict]:
 
 
 def double_check(pdf_path: Path, out_dir: Path, kept_blocks: list[Block],
-                 qc: dict, device: str = "cuda") -> None:
+                 qc: dict, device: str = "cuda", work_dir: Path | None = None) -> None:
     """就地更新 qc dict。任何模型/IO 异常都不应中断主流程。"""
     stem = pdf_path.stem
     middle_candidates = sorted(
-        out_dir.glob(f"_mineru_raw/**/{stem}_middle.json"))
+        (work_dir or out_dir / "_mineru_raw").rglob(f"{stem}_middle.json"))
     inline_spans = _load_inline_spans(middle_candidates[0]) if middle_candidates else []
 
     eq_blocks = [b for b in kept_blocks if b.type == BLOCK_EQUATION]
@@ -112,9 +112,9 @@ def double_check(pdf_path: Path, out_dir: Path, kept_blocks: list[Block],
     for (i, b), ocr_latex in zip(owners, latex_list):
         v, sim = verdict(b.content, ocr_latex)
         display_records.append({
-            "block_index": i, "page": b.page, "bbox": b.bbox,
+            "block_id": b.block_id, "page": b.page, "bbox": b.bbox,
             "verdict": v, "similarity": sim,
-            "parser": b.content[:300], "formula_ocr": ocr_latex[:300],
+            "parser": b.content, "formula_ocr": ocr_latex,
         })
 
     # ---- math_divergence 段落的 inline span 复核 ----
@@ -143,14 +143,12 @@ def double_check(pdf_path: Path, out_dir: Path, kept_blocks: list[Block],
         for s, ocr_latex in zip(spans, latex_list):
             v, sim = verdict(s["content"], ocr_latex)
             span_results.append({"bbox": s["bbox"], "verdict": v, "similarity": sim,
-                                 "parser": s["content"][:200],
-                                 "formula_ocr": ocr_latex[:200]})
-            inline_records.append({"page": page, **span_results[-1]})
+                                 "parser": s["content"],
+                                 "formula_ocr": ocr_latex})
+            inline_records.append({"page": page, "block_id": w.get("block_id"), **span_results[-1]})
         w["formula_spans"] = span_results
         # 该段落全部行内公式双识别一致 -> 表示分歧，升级为 auto_pass
-        if all(r["verdict"] == "PASS" for r in span_results):
-            w["status"] = "auto_pass"
-            w["resolution"] = "all_inline_spans_passed_double_check"
+        # 公式一致不能证明段落没有丢文字，保留原始覆盖率警告。
 
     # ---- 汇总 ----
     n_eq_review = sum(1 for r in display_records if r["verdict"] == "REVIEW")

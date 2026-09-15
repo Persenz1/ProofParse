@@ -32,19 +32,30 @@ _MIN_DEFICIT_CHARS = 40      # 规范化后缺失字符数阈值
 
 # ---------------------------------------------------------------- 坐标提取
 
-def _extract_chunks(pdf_path: Path) -> list[list[tuple[str, float, float]]]:
-    """每页 [(text, x, y), ...]，坐标为 PDF 用户空间（原点左下）。"""
-    reader = PdfReader(str(pdf_path))
-    pages: list[list[tuple[str, float, float]]] = []
-    for page in reader.pages:
-        chunks: list[tuple[str, float, float]] = []
-
-        def visitor(text, cm, tm, font_dict, font_size):
-            if text.strip():
-                chunks.append((text, float(tm[4]), float(tm[5])))
-
-        page.extract_text(visitor_text=visitor)
-        pages.append(chunks)
+def _extract_chunks(pdf_path: Path) -> list:
+    """PDFium 文字行矩形；返回原始文字及可见页面左上原点归一化坐标。"""
+    import pypdfium2 as pdfium
+    pages = []
+    with pdfium.PdfDocument(str(pdf_path)) as pdf:
+        for page in pdf:
+            textpage = page.get_textpage()
+            left, bottom, right, top = page.get_bbox()
+            width, height = right-left, top-bottom
+            angle = page.get_rotation()
+            chunks = []
+            for i in range(textpage.count_rects()):
+                l, b, r, t = textpage.get_rect(i)
+                text = textpage.get_text_bounded(l, b, r, t).strip()
+                if not text: continue
+                x, y = ((l+r)/2-left)/width, ((b+t)/2-bottom)/height
+                if angle == 90: nx, ny = y, x
+                elif angle == 180: nx, ny = 1-x, y
+                elif angle == 270: nx, ny = 1-y, 1-x
+                else: nx, ny = x, 1-y
+                chunks.append((text, nx*1000, ny*1000))
+            pages.append(chunks)
+            textpage.close()
+            page.close()
     return pages
 
 
@@ -109,15 +120,7 @@ def _norm_block_content(text: str) -> str:
 
 def check_coverage(pdf_path: Path, blocks: list[Block]) -> dict:
     """返回 {'fixes': [...], 'warnings': [...]}；自动修复直接就地修改 blocks。"""
-    reader = PdfReader(str(pdf_path))
-    page_sizes = [(float(p.mediabox.width), float(p.mediabox.height)) for p in reader.pages]
-
-    raw_pages = _extract_chunks(pdf_path)
-    # 坐标换算
-    pages_norm: list[list[tuple[str, float, float]]] = []
-    for page_idx, chunks in enumerate(raw_pages):
-        pw, ph = page_sizes[page_idx]
-        pages_norm.append([(t, *_norm1000(x, y, pw, ph)) for t, x, y in chunks])
+    pages_norm = _extract_chunks(pdf_path)
 
     chunk_map = _assign_chunks(pages_norm, blocks)
 
@@ -148,51 +151,29 @@ def check_coverage(pdf_path: Path, blocks: list[Block]) -> dict:
         if deficit < _MIN_DEFICIT_CHARS:
             continue
 
-        # 安全自动修复：block 文本完整是文字层的后缀 -> 前缀丢失（drop-cap 场景）
-        def _mostly_prose(norm_piece: str) -> bool:
-            """待补回内容必须基本是散文（字母占比 >=90%）。
-            防止把表格残渣（数字密集的单元格文本）补进正文。"""
-            if not norm_piece:
-                return False
-            n_alpha = sum(1 for c in norm_piece if c.isalpha())
-            return n_alpha / len(norm_piece) >= 0.9
-
-        if norm_b and norm_b in norm_tl:
-            j = norm_tl.find(norm_b)
-            if j >= _MIN_DEFICIT_CHARS and _mostly_prose(norm_tl[:j]):
-                raw_prefix = fix_dropcap(raw_tl[: idx_map[j - 1] + 1].strip())
-                if raw_prefix:
-                    b.content = raw_prefix + " " + b.content
-                    fixes.append({
-                        "type": "text_recall_autofix",
-                        "page": b.page,
-                        "restored_text": raw_prefix[:300],
-                    })
-                    continue
-            # block 是前缀 -> 后缀丢失，同理补回
-            if (j == 0 and len(norm_tl) - len(norm_b) >= _MIN_DEFICIT_CHARS
-                    and _mostly_prose(norm_tl[len(norm_b):])):
-                raw_suffix = raw_tl[idx_map[len(norm_b)]:].strip()
-                if raw_suffix:
-                    b.content = b.content + " " + raw_suffix
-                    fixes.append({
-                        "type": "text_recall_autofix",
-                        "page": b.page,
-                        "restored_text": raw_suffix[:300],
-                    })
-                    continue
-
         warnings.append({
             "type": "text_recall",
             "page": b.page,
             "bbox": b.bbox,
+            "block_id": b.block_id,
             "similarity": round(ratio, 3),
             # 相似度中等偏高时，差异几乎都来自行内公式的文字层替换字符
             # （Σ→P、α→a 等），parser 输出通常比文字层更准——标记而非报警
             "likely_cause": "math_divergence" if ratio >= 0.5 else "possible_text_loss",
-            "missing_text": raw_tl[:300],
-            "parser_text": b.content[:200],
+            "missing_text": raw_tl,
+            "parser_text": b.content,
             "status": "needs_review",
         })
+
+    # 从源出发保留没有任何解析块接收的文字行；不能因为缺块而跳过。
+    for page, chunks in enumerate(pages_norm):
+        boxes = [b.bbox for b in blocks if b.page == page and b.bbox]
+        missing = [(text, x, y) for text, x, y in chunks
+                   if not any(bb[0] <= x <= bb[2] and bb[1] <= y <= bb[3] for bb in boxes)]
+        if missing:
+            warnings.append({"type": "unassigned_source", "page": page,
+                             "missing_text": "\n".join(t for t, _, _ in missing),
+                             "parser_text": "", "status": "needs_review",
+                             "likely_cause": "unassigned_source"})
 
     return {"fixes": fixes, "warnings": warnings}

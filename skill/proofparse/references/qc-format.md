@@ -1,65 +1,43 @@
-# qc.json 与终审结果格式
+# 复查协议 v2
 
-## qc.json 顶层
+工作清单为 {schema_version: 2, instructions: 公共规则, items: [...]}。
+每项包含 uid、input_hash、kind、page（0-based）、block_id、完整双候选、context、asset、page_asset、source_pdf。
+导出路径为当前机器绝对路径；复制资料包后重新导出即可，任务哈希不绑定本机路径。
+
+类型：page_completeness、visual、formula_display、formula_inline、text_warning。
+文档及图表 bbox 为可见页面左上原点的 0..1000 坐标；inline 原始 bbox 为 PDF 点，仅供追溯，不可直接当归一化裁剪框。
+
+裁决 JSON 以 uid 为键：
 
 ```json
 {
-  "parser": {...}, "filter_stats": {...},
-  "n_display_equations": 0, "n_inline_math_spans": 0,
-  "n_auto_fixed": 0,            // 第 1 层自动修复数（LaTeX 修括号、覆盖率补句）
-  "fixes": [...],
-  "warnings": [...],            // 文本覆盖率警告
-  "summary": {"n_needs_review": 0, ...},
-  "formula_check": {            // 第 2 层双识别结果
-    "model": "pp_formulanet_plus_m",
-    "display": [...], "inline": [...],
-    "n_display_checked": 0, "n_display_review": 0,
-    "n_inline_checked": 0, "n_inline_review": 0
+  "paper::formula_check/display/0": {
+    "input_hash": "从任务复制",
+    "choice": "custom",
+    "corrected_latex": "\\frac{a}{b}\\tag{2.1}",
+    "confidence": 0.95,
+    "reason": "原页显示分母 b、公式编号 2.1"
   }
 }
 ```
 
-## warnings[*]（文本类）
+parser 确认候选 A / 页面完整 / 图像裁剪完整；ocr 使用完整候选 B；custom 提交完整修正；open 无法确定。
+表格 parser 或 custom 表示其结构和各行列内容已经视觉核对，随后会显示结构化表格。
+input_hash 必填，用于拒绝过期工作清单。不能批量替尚未看图的项目填 parser。
 
-- `status`: `auto_fixed` | `needs_review`
-- `likely_cause`: `math_divergence`（公式导致歧义，含 `formula_spans` 明细）|
-  `possible_text_loss`（疑似丢字）
-- `missing_text`（PDF 文字层候选）/ `parser_text`（解析器候选，均可能截断）
-- `page` / `bbox`（1000 归一化）/ `review_asset`（裁剪图相对路径）
+页面 custom 可含 edits: [{block_id, old_content, content}] 和 inserts: [{after_block_id, type, content, bbox}]。
+旧内容必须完全匹配，目标及锚点必须位于该页；null 锚点代表页首。
+edits 可含 after_block_id 修正页内顺序（null 为页首），也可含 type 纠正文字/代码/公式分类；首页 custom 可含 metadata（title、authors 字符串列表、year 整数、doi），只能依据原页修正。
+可插入 paragraph/heading/equation/list/code/figure/table；图表会从原页按 bbox 裁剪，并进入新视觉任务。
+visual custom 可提交 crop_bbox: [x1,y1,x2,y2]，在原页重新裁剪后保持待复查；不能把新裁剪自动标记完整。
+页面内容修正后需重新看该页，不能自动标记完整。
+重复行内公式无法唯一定位时保持 open，不使用首个同名字符串随意替换。
 
-## formula_check.display[*] / inline[*]
+qc.json 包含 warnings、formula_check、page_review、visual_review。
+final_verdict 记录 status（resolved/open/error）、application、input_hash、choice、confidence、reason、model。
+低置信、失败、过期、未检查都不表示通过。局部修正会使已确认页面需要重新核对。
 
-- `verdict`: `PASS` | `REVIEW`（归一化相似度 <0.90）
-- `parser` / `formula_ocr` 双候选；`similarity`
-- display 有 `block_index`（定位 document.json 块）；inline 只有 `page`+`bbox`
-  （inline 的 bbox 单位是 **PDF 点**，display 是 1000 归一化）
-
-## final_verdict（第 3 层终审写回，每条被审条目上）
-
-```json
-{
-  "reviewed_at": "ISO 时间", "layer": "multimodal",
-  "status": "resolved | error",
-  "choice": "parser | ocr | custom",
-  "corrected_latex": null,
-  "confidence": 0.95, "reason": "...", "model": "mimo-v2.5",
-  "agent_override": true,          // 可选：agent 人工推翻 VLM 时
-  "previous_verdict": {...}        // 可选：被推翻的原裁决
-}
-```
-
-- `choice=parser`：解析器正确，md 不动
-- `choice=ocr/custom` 且 confidence ≥0.7：已自动应用到 document.json 并重建 md
-- confidence <0.7 或 `status=error`：md 不动，论文进入 still_open
-
-## review_summary.json（output 根目录）
-
-```json
-{"<paper>": {"status": "auto_pass | reviewed | still_open",
-             "n_reviewed": 0, "n_applied": 0, "n_confirmed": 0,
-             "n_skipped": 0, "seconds": 0}}
-```
-
-批量运行只盯 `still_open`：打开该篇目录，按 qc.json 里无有效
-`final_verdict` 的条目找 `review_asset` 裁剪图人工裁决，
-再用 `--from-json` 导回。
+review_summary.json 的 status：auto_pass（仅无待检查内容）、reviewed、still_open。
+新资料包都有逐页检查任务，未完成视觉检查时不会直接 auto_pass。
+导入退出码 1 代表仍有未解决项，0 代表全部检查通过；2 为参数/文件配置错误。
+API 缓存保存成功响应、usage 和不确定请求状态。调用数量上限不是严格费用封顶。

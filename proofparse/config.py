@@ -34,7 +34,5 @@ REFERENCE_HEADINGS = {
 
 # 需要在 Markdown 中丢弃的 MinerU 块类型
 DROP_BLOCK_TYPES = {
-    "image", "chart", "table",
-    "page_number", "page_footer", "page_footnote", "header", "footer",
-    "aside_text", "seal",
+    "page_number", "page_footer", "header", "footer", "seal",
 }

@@ -14,28 +14,7 @@ from typing import Optional
 
 from .apply import APPLY_CONFIDENCE, apply_to_document, paper_status, rebuild_markdown, write_verdicts
 from .collect import ReviewItem, collect
-from .vlm import OpenAICompatVLM, VLMError
-
-
-class FileVLM:
-    """离线裁决后端：从 JSON 文件读取 agent 人工裁决结果。
-
-    文件格式：{ "<uid>": {"choice": "parser|ocr|custom",
-                          "corrected_latex": ...|null, "confidence": 0-1,
-                          "reason": "..."} }
-    uid 即 collect.ReviewItem.uid（--export 导出的清单里有）。
-    """
-
-    def __init__(self, path: Path):
-        self.verdicts = json.loads(Path(path).read_text(encoding="utf-8"))
-
-    def adjudicate(self, item, image_path, retries: int = 0) -> dict:
-        v = self.verdicts.get(item.uid)
-        if v is None:
-            raise VLMError(f"verdicts 文件中缺少 {item.uid}")
-        return {"choice": v["choice"], "corrected_latex": v.get("corrected_latex"),
-                "confidence": float(v.get("confidence", 1.0)),
-                "reason": str(v.get("reason", "")), "model": "agent"}
+from .agent import FileVLM, REVIEW_INSTRUCTIONS
 
 
 def export_worklist(output_root: Path, path: Path, force: bool = False) -> int:
@@ -43,12 +22,17 @@ def export_worklist(output_root: Path, path: Path, force: bool = False) -> int:
     items = collect(output_root, skip_done=not force)
     rows = [{
         "uid": it.uid, "kind": it.kind, "page": it.page,
-        "asset": str(Path(it.paper) / it.review_asset) if it.review_asset else None,
+        "asset": str((output_root / it.paper / it.review_asset).resolve()) if it.review_asset else None,
+        "document": str((output_root / it.paper / "document.json").resolve()),
+        "source_pdf": str((output_root / it.paper / "source.pdf").resolve()),
+        "page_asset": str((output_root / it.paper / "review_assets" / f"page_{it.page:04d}.png").resolve()) if it.page is not None else None,
+        "bbox": it.bbox,
         "likely_cause": it.likely_cause,
         "candidate_A_parser": it.candidate_a,
         "candidate_B": it.candidate_b,
+        "input_hash": it.input_hash, "block_id": it.block_id, "context": it.extra,
     } for it in items]
-    Path(path).write_text(json.dumps(rows, ensure_ascii=False, indent=2),
+    Path(path).write_text(json.dumps({"schema_version": 2, "instructions": REVIEW_INSTRUCTIONS, "items": rows}, ensure_ascii=False, indent=2),
                           encoding="utf-8")
     return len(rows)
 
@@ -73,7 +57,10 @@ def run_review(output_root: Path, vlm=None, force: bool = False,
         return {"dry_run": True, "n_items": len(items), "by_paper": dict(by_paper)}
 
     if vlm is None:
-        vlm = OpenAICompatVLM()
+        raise ValueError("请先导出清单，由当前多模态 agent 看图裁决，再用 --from-json 导入")
+
+    if isinstance(vlm, FileVLM):
+        items = [it for it in items if it.uid in vlm.verdicts]
 
     by_paper_items: dict[str, list[ReviewItem]] = defaultdict(list)
     for it in items:
@@ -111,26 +98,33 @@ def run_review(output_root: Path, vlm=None, force: bool = False,
                         f"{verdict['choice']} conf={verdict['confidence']:.2f} "
                         f"{verdict['reason'][:60]}")
 
-        # 写回 qc.json
-        qc = write_verdicts(paper_dir, results)
-
         # 应用确认的正确答案到 document.json，之后统一重建一次 md
         n_applied = n_confirmed = n_skipped = 0
         for it, verdict, error in results:
             if not verdict:
                 n_skipped += 1
                 continue
-            r = apply_to_document(paper_dir, it, verdict)
-            if r == "applied":
+            try:
+                r = apply_to_document(paper_dir, it, verdict)
+            except (ValueError, KeyError, TypeError) as exc:
+                r = f"skipped:invalid_patch:{exc}"
+            if r.startswith("applied"):
                 n_applied += 1
             elif r == "confirmed":
                 n_confirmed += 1
             else:
                 n_skipped += 1
                 log(f"    [skip] {it.kind} p{it.page}: {r}")
+            verdict["application"] = r
         if n_applied:
             md_path = rebuild_markdown(paper_dir)
             log(f"  已重建 {md_path.name}（应用 {n_applied} 处修正）")
+
+        current = {it.uid: it.input_hash for it in collect(output_root, skip_done=False)}
+        for it, verdict, error in results:
+            if verdict and verdict.get("application") == "applied":
+                verdict["input_hash"] = current[it.uid]
+        qc = write_verdicts(paper_dir, results)
 
         summary[paper] = {
             "status": paper_status(qc),
@@ -151,6 +145,11 @@ def run_review(output_root: Path, vlm=None, force: bool = False,
             summary[paper] = {"status": paper_status(qc), "n_reviewed": 0,
                               "n_applied": 0, "n_confirmed": 0, "n_skipped": 0}
 
+    # 已确认页的内容被后续区域修正时，不能继续宣称已完成整页复查。
+    for it in collect(output_root):
+        if it.paper in summary:
+            summary[it.paper]["status"] = "still_open"
+
     out = output_root / "review_summary.json"
     out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     n_open = sum(1 for s in summary.values() if s["status"] == "still_open")
@@ -168,20 +167,25 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="忽略已有 final_verdict，全部重裁")
     ap.add_argument("--dry-run", action="store_true",
                     help="只列出待裁决清单，不调用模型")
-    ap.add_argument("--base-url", help="覆盖 PROOFPARSE_VLM_BASE_URL")
-    ap.add_argument("--api-key", help="覆盖 PROOFPARSE_VLM_API_KEY")
-    ap.add_argument("--model", help="覆盖 PROOFPARSE_VLM_MODEL")
     ap.add_argument("-j", "--workers", type=int, default=4, help="并发裁决线程数")
-    ap.add_argument("--export", metavar="WORKLIST.json",
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--export", metavar="WORKLIST.json",
                     help="导出待裁决清单后退出（agent 裁决官模式）")
-    ap.add_argument("--from-json", metavar="VERDICTS.json",
-                    help="从 JSON 文件读取裁决结果（agent 人工裁决），不调用外部模型")
+    mode.add_argument("--from-json", metavar="VERDICTS.json",
+                    help="导入当前多模态 agent 看图后生成的 JSON 裁决")
+    mode.add_argument("--api", action="store_true", help="明确授权向指定 API 发送本轮待审图片和文本")
+    ap.add_argument("--api-url", help="OpenAI-compatible base URL")
+    ap.add_argument("--api-model", help="Vision model name")
+    ap.add_argument("--max-requests", type=int, default=20, help="API 新请求数上限；不是货币预算")
+    ap.add_argument("--max-output-tokens", type=int, default=4096)
     args = ap.parse_args(argv)
 
-    if args.export:
-        n = export_worklist(Path(args.output_root), Path(args.export),
+    if args.export or (not args.from_json and not args.api and not args.dry_run):
+        export_path = Path(args.export) if args.export else Path(args.output_root) / "review_worklist.json"
+        n = export_worklist(Path(args.output_root), export_path,
                             force=args.force)
-        print(f"[export] {n} 条 -> {args.export}")
+        print(f"[export] {n} 条 -> {export_path}；导出不代表已终审。")
+        print("请由当前多模态 agent 打开 asset 图片逐条裁决，再用 --from-json 导入结果。")
         return 0
 
     try:
@@ -189,10 +193,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             vlm = None
         elif args.from_json:
             vlm = FileVLM(args.from_json)
-        else:
-            vlm = OpenAICompatVLM(
-                base_url=args.base_url, api_key=args.api_key, model=args.model)
-    except VLMError as e:
+        elif args.api:
+            if not args.api_url or not args.api_model:
+                ap.error("--api requires --api-url and --api-model")
+            from .api import APIReviewer
+            vlm = APIReviewer(args.output_root,args.api_url,args.api_model,args.max_requests,args.max_output_tokens)
+    except (OSError, ValueError) as e:
         print(f"[error] {e}", file=sys.stderr)
         return 2
 

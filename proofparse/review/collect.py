@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,8 @@ from typing import Any, Optional
 KIND_TEXT = "text_warning"
 KIND_DISPLAY = "formula_display"
 KIND_INLINE = "formula_inline"
+KIND_PAGE = "page_completeness"
+KIND_VISUAL = "visual"
 
 
 @dataclass
@@ -36,7 +39,9 @@ class ReviewItem:
     label_b: str = "ocr"
     likely_cause: str = ""
     review_asset: Optional[str] = None   # 相对论文目录
-    block_index: Optional[int] = None    # 仅 formula_display
+    block_index: Optional[int] = None    # legacy
+    block_id: str | None = None
+    input_hash: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -47,16 +52,17 @@ class ReviewItem:
 def _collect_from_qc(paper: str, qc: dict) -> list[ReviewItem]:
     items: list[ReviewItem] = []
     for i, w in enumerate(qc.get("warnings", [])):
-        if w.get("status") != "needs_review":
+        if w.get("status") != "needs_review" or w.get("type") == "unassigned_source":
             continue
         items.append(ReviewItem(
-            paper=paper, kind=KIND_TEXT, ref=("warnings", i),
+            paper=paper, kind=KIND_DISPLAY if w.get("type") == "latex_sanity" else KIND_TEXT, ref=("warnings", i),
             page=w.get("page"), bbox=w.get("bbox"),
             candidate_a=w.get("parser_text", ""),
             candidate_b=w.get("missing_text", ""),
             label_a="parser", label_b="pdf_text_layer",
             likely_cause=w.get("likely_cause", ""),
             review_asset=w.get("review_asset"),
+            block_id=w.get("block_id"),
             extra={"warning_id": w.get("id", ""), "similarity": w.get("similarity")},
         ))
     fc = qc.get("formula_check") or {}
@@ -72,53 +78,55 @@ def _collect_from_qc(paper: str, qc: dict) -> list[ReviewItem]:
                 label_a="parser", label_b="formula_ocr",
                 review_asset=r.get("review_asset"),
                 block_index=r.get("block_index"),
+                block_id=r.get("block_id"),
                 extra={"similarity": r.get("similarity")},
             ))
     return items
 
 
-def _enrich_text_candidate(paper_dir: Path, item: ReviewItem) -> None:
-    """text_warning 的 parser_text 是被 qc 截断的前缀，用它裁决会冤枉解析器。
-
-    从 document.json 找回该段落的完整内容替换候选 A（按页 + 前缀匹配）。
-    """
-    if item.kind != KIND_TEXT or not item.candidate_a:
-        return
-    doc_path = paper_dir / "document.json"
-    if not doc_path.exists():
-        return
-    try:
-        data = json.loads(doc_path.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    prefix = re.sub(r"\s+", "", item.candidate_a)[:40]
-    if not prefix:
-        return
-    for b in data.get("blocks", []):
-        if b.get("page") != item.page:
-            continue
-        if re.sub(r"\s+", "", b.get("content") or "").startswith(prefix):
-            item.candidate_a = b["content"]
-            return
-
-
 def collect(output_root: Path, skip_done: bool = True) -> list[ReviewItem]:
-    """扫描 output_root 下所有论文目录，返回待裁决清单。
-
-    skip_done=True 时跳过已有 final_verdict 的条目（幂等重跑）。
-    """
-    output_root = Path(output_root)
-    items: list[ReviewItem] = []
-    for qc_path in sorted(output_root.glob("*/qc.json")):
-        paper = qc_path.parent.name
+    items = []
+    for qc_path in sorted(Path(output_root).glob("*/qc.json")):
+        paper_dir = qc_path.parent
         qc = json.loads(qc_path.read_text(encoding="utf-8"))
-        for it in _collect_from_qc(paper, qc):
-            if skip_done:
-                entry = get_entry(qc, it.ref)
-                fv = entry.get("final_verdict")
-                if fv and fv.get("status") == "resolved":
-                    continue  # 已成功裁决的跳过；error 状态的重裁
-            _enrich_text_candidate(qc_path.parent, it)
+        doc = json.loads((paper_dir / "document.json").read_text(encoding="utf-8"))
+        blocks = {b.get("block_id"): b for b in doc["blocks"]}
+        paper_items = _collect_from_qc(paper_dir.name, qc)
+        for section, kind in (("page_review", KIND_PAGE), ("visual_review", KIND_VISUAL)):
+            for i, entry in enumerate(qc.get(section, [])):
+                block = blocks.get(entry.get("block_id"), {})
+                paper_items.append(ReviewItem(
+                    paper=paper_dir.name, kind=kind, ref=(section, i),
+                    page=entry.get("page"), bbox=entry.get("bbox"),
+                    candidate_a=block.get("content", ""), candidate_b="",
+                    review_asset=entry.get("review_asset"), block_id=entry.get("block_id"),
+                    extra={"type": block.get("type"), "caption": block.get("extra", {}).get("caption", "")}))
+        for it in paper_items:
+            if it.kind == KIND_PAGE:
+                if it.page == 0:
+                    it.extra["metadata"] = doc.get("metadata", {})
+                it.extra["unassigned_source"] = [w.get("missing_text") for w in qc.get("warnings", []) if w.get("type") == "unassigned_source" and w.get("page") == it.page]
+                # 上游会跨页合并段落，并在下一页留下空块；给审阅者相邻上下文，避免重复补写。
+                previous = [b for b in doc["blocks"] if b.get("page") == it.page-1 and b["type"] in ("paragraph", "list")]
+                following = [b for b in doc["blocks"] if b.get("page") == it.page+1 and b["type"] in ("paragraph", "list")]
+                it.extra["boundary_context"] = [{k:b.get(k) for k in ("block_id", "page", "content")}
+                                                for b in previous[-1:] + following[:1]]
+                it.extra["blocks"] = [
+                    {k: b.get(k) for k in ("block_id", "type", "content", "bbox", "in_markdown")}
+                    | {"caption": b.get("extra", {}).get("caption", ""), "footnote": b.get("extra", {}).get("footnote", "")}
+                    for b in doc["blocks"] if b.get("page") == it.page]
+            block = blocks.get(it.block_id)
+            if block:
+                it.extra["target_content"] = block.get("content", "")
+            asset = paper_dir / it.review_asset if it.review_asset else None
+            evidence = {"pdf": doc.get("pdf_sha256"), "kind": it.kind, "page": it.page,
+                        "a": it.candidate_a, "b": it.candidate_b, "block": it.block_id,
+                        "extra": it.extra, "bbox": it.bbox,
+                        "image": hashlib.sha256(asset.read_bytes()).hexdigest() if asset and asset.is_file() else None}
+            it.input_hash = hashlib.sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            fv = get_entry(qc, it.ref).get("final_verdict") or {}
+            if skip_done and fv.get("status") == "resolved" and fv.get("input_hash") == it.input_hash:
+                continue
             items.append(it)
     return items
 

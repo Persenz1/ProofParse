@@ -45,8 +45,8 @@ def _mineru_version() -> str:
 class MinerUParser(DocumentParser):
     name = "mineru"
 
-    def parse(self, pdf_path: Path, work_dir: Path) -> Document:
-        pdf_path = Path(pdf_path)
+    def parse(self, pdf_path: Path, work_dir: Path, asset_dir: Path | None = None) -> Document:
+        pdf_path = Path(pdf_path).resolve()
         work_dir.mkdir(parents=True, exist_ok=True)
 
         cmd = [
@@ -76,8 +76,22 @@ class MinerUParser(DocumentParser):
                 "backend": config.MINERU_BACKEND,
             },
         )
-        for item in raw:
-            doc.blocks.append(self._convert_block(item))
+        for i, item in enumerate(raw):
+            block = self._convert_block(item)
+            block.block_id = f"b{i:06d}"
+            doc.blocks.append(block)
+
+        import shutil
+        for block in doc.blocks:
+            if block.type not in ("figure", "table", "unknown"):
+                continue
+            src = candidates[0].parent / block.extra.get("img_path", "")
+            if src.is_file():
+                rel = Path("assets") / f"{block.block_id}{src.suffix}"
+                dst = (asset_dir or work_dir.parent) / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                block.extra["asset"] = rel.as_posix()
 
         doc.metadata = self._extract_metadata(doc.blocks)
         return doc
@@ -90,6 +104,28 @@ class MinerUParser(DocumentParser):
         extra = {k: v for k, v in item.items()
                  if k not in {"type", "text", "bbox", "page_idx", "text_level", "text_format"}}
 
+        def joined(value):
+            if isinstance(value, list):
+                return "\n\n".join(joined(x) for x in value)
+            if isinstance(value, dict):
+                return joined(value.get("text", value.get("content", "")))
+            return str(value or "")
+
+        if btype in ("image", "chart", "table"):
+            prefix = "image" if btype == "image" else btype
+            caption = joined(item.get(f"{prefix}_caption", item.get("img_caption", [])))
+            footnote = joined(item.get(f"{prefix}_footnote", item.get("img_footnote", [])))
+            return Block(type="table" if btype == "table" else "figure",
+                         content=joined(item.get("table_body", "")) if btype == "table" else "",
+                         page=page, bbox=bbox, source="mineru_pipeline",
+                         extra={**extra, "caption": caption, "footnote": footnote,
+                                "structure_verified": False})
+
+        if btype in ("list", "code"):
+            content = joined(item.get("list_items", [])) if btype == "list" else joined(item.get("code_body", ""))
+            return Block(type=btype, content=content or joined(item.get("text", "")),
+                         page=page, bbox=bbox, source="mineru_pipeline", extra=extra)
+
         if btype in config.DROP_BLOCK_TYPES:
             # 图/表的 caption、表格正文等文字要保留在 content 里：
             # 覆盖率检查需要它们避免把 caption 句子误判为"正文丢失"
@@ -101,7 +137,8 @@ class MinerUParser(DocumentParser):
                     parts.extend(str(x) for x in v)
                 elif isinstance(v, str):
                     parts.append(v)
-            return Block(type=BLOCK_DROPPED, content=" ".join(p for p in parts if p),
+            # 首页 header 可能实际是论文标题，不能按上游类型直接丢弃。
+            return Block(type=BLOCK_PARAGRAPH if btype == "header" and page == 0 else BLOCK_DROPPED, content=" ".join(p for p in parts if p),
                          page=page, bbox=bbox, source="mineru_pipeline",
                          extra={"orig_type": btype, **extra})
 
@@ -121,7 +158,12 @@ class MinerUParser(DocumentParser):
             return Block(type=btype_internal, content=text, page=page, bbox=bbox,
                          level=level, source="mineru_pipeline", extra=extra)
 
-        # text / list / 其它可保留文本块一律视为段落
+        if not text and btype != "text":
+            return Block(type="unknown", content=joined(item.get("content", "")),
+                         page=page, bbox=bbox, source="mineru_pipeline",
+                         extra={"orig_type": btype, **extra})
+
+        # 页脚之外的文字（包括脚注）保留。
         return Block(type=BLOCK_PARAGRAPH, content=text, page=page, bbox=bbox,
                      source="mineru_pipeline",
                      extra={"orig_type": btype, **extra})
@@ -134,10 +176,12 @@ class MinerUParser(DocumentParser):
         md = Metadata()
         title_idx = None
         for i, b in enumerate(blocks):
-            if b.type == BLOCK_TITLE:
+            if title_idx is not None and b.type == BLOCK_PARAGRAPH:
+                break
+            if b.type == BLOCK_TITLE and (b.page or 0) == 0:
+                # 连续的刊名/论文名标题块，使用作者段落前的最后一个。
                 md.title = b.content
                 title_idx = i
-                break
 
         # authors：首页、位于 title 之后、"Abstract" 标题之前的段落块
         if title_idx is not None:
@@ -152,6 +196,7 @@ class MinerUParser(DocumentParser):
         # DOI / 版权行可能藏在被过滤的页脚块里（IEEE 论文实测如此），
         # 因此扫描全部块（含 dropped），不受正文过滤影响
         all_text = "\n".join(b.content for b in blocks if (b.page or 0) <= 1)
+        all_text = re.sub(r"(10\.\d{4,9}/[^\s<>]+-)\s+([A-Za-z0-9])", r"\1\2", all_text)
         m = _DOI_RE.search(all_text)
         if m:
             md.doi = m.group(0).rstrip(".,")

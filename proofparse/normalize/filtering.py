@@ -40,7 +40,7 @@ def apply_filtering(blocks: list[Block]) -> tuple[list[Block], list[Block], dict
       这是可接受的折衷；多数会议/期刊论文 ack 在 references 前）
     - BLOCK_DROPPED 类型块直接过滤
     """
-    cutoff = find_references_cutoff(blocks)
+    cutoff = None  # References、附录和文末声明也是论文内容。
     kept: list[Block] = []
     dropped: list[Block] = []
     truncated = False

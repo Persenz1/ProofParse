@@ -22,6 +22,8 @@ import hashlib
 import json
 import sys
 import traceback
+import shutil
+import os
 from pathlib import Path
 
 from . import config
@@ -30,8 +32,6 @@ from .normalize.coverage import check_coverage
 from .normalize.filtering import apply_filtering
 from .normalize.markdown import build_markdown
 from .formula.qc import run_qc
-from .formula.double_check import double_check
-from .formula.recognizer import release_formula_ocr
 from .parsers.mineru_parser import MinerUParser
 from .pdf.render import render_crop, render_page
 
@@ -98,16 +98,30 @@ def process_pdf(pdf_path: Path, output_root: Path, parser_name: str = "mineru",
     out_dir = output_root / pdf_path.stem
     md_path = out_dir / f"{pdf_path.stem}.md"
 
-    if md_path.exists() and not force:
-        print(f"[skip] 已存在: {md_path}")
-        return md_path
+    source_hash = pdf_hash(pdf_path)
+    if md_path.exists() and (out_dir / "qc.json").exists() and not force:
+        saved = json.loads((out_dir / "document.json").read_text(encoding="utf-8"))
+        if saved.get("pdf_sha256") != source_hash:
+            raise ValueError(f"同名 PDF 内容已改变，请使用不同输出目录或 -f：{pdf_path}")
+        if saved.get("schema_version") == 2:
+            print(f"[skip] 已存在且源文件一致: {md_path}")
+            return md_path
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    work_dir = out_dir / "_mineru_raw"
+    # 由调用者为本次任务指定临时工作根；默认保留旧版路径，跨平台可运行。
+    scratch = os.environ.get("PROOFPARSE_WORK_DIR")
+    work_dir = Path(scratch) / pdf_path.stem / "raw" if scratch else out_dir / "_mineru_raw"
 
     # 1) 解析
     parser = _PARSERS[parser_name]()
-    doc: Document = parser.parse(pdf_path, work_dir)
+    doc: Document = parser.parse(pdf_path, work_dir, asset_dir=out_dir)
+    shutil.copy2(pdf_path, out_dir / "source.pdf")
+    doc.source_pdf = "source.pdf"
+    for b in doc.blocks:
+        if b.type in ("figure", "table", "unknown") and not b.extra.get("asset") and b.bbox and b.page is not None:
+            asset = Path("assets") / f"{b.block_id}.png"
+            render_crop(pdf_path, b.page, b.bbox, out_dir / asset)
+            b.extra["asset"] = asset.as_posix()
 
     # 2) 文本覆盖率检查（在过滤前做，References 截断不算召回丢失）
     coverage_result = check_coverage(pdf_path, doc.blocks)
@@ -121,7 +135,8 @@ def process_pdf(pdf_path: Path, output_root: Path, parser_name: str = "mineru",
 
     # 5) document.json（含全部块 + 是否进入 markdown）
     document_json = doc.to_dict()
-    document_json["pdf_sha256"] = pdf_hash(pdf_path)
+    document_json["pdf_sha256"] = source_hash
+    document_json["schema_version"] = 2
     kept_ids = {id(b) for b in kept}
     for b_dict, b_obj in zip(document_json["blocks"], doc.blocks):
         b_dict["in_markdown"] = id(b_obj) in kept_ids
@@ -132,10 +147,24 @@ def process_pdf(pdf_path: Path, output_root: Path, parser_name: str = "mineru",
     qc = run_qc(doc, kept, dropped, stats, coverage_result)
     if formula_check:
         try:
-            double_check(pdf_path, out_dir, kept, qc, device=config.MINERU_DEVICE)
+            from .formula.double_check import double_check
+            double_check(pdf_path, out_dir, kept, qc, device=config.MINERU_DEVICE, work_dir=work_dir)
         except Exception as e:  # 双识别失败不中断主流程
             qc["formula_check"] = {"error": str(e)}
+    else:
+        qc["formula_check"] = {"status": "not_run"}
     _generate_review_assets(qc, pdf_path, out_dir)
+    import pypdfium2 as pdfium
+    with pdfium.PdfDocument(str(pdf_path)) as pdf:
+        n_pages = len(pdf)
+    qc["page_review"] = []
+    for page in range(n_pages):
+        asset = Path("review_assets") / f"page_{page:04d}.png"
+        render_page(pdf_path, page, out_dir / asset)
+        qc["page_review"].append({"page": page, "review_asset": asset.as_posix()})
+    qc["visual_review"] = [{"block_id": b.block_id, "page": b.page, "bbox": b.bbox,
+                            "review_asset": b.extra.get("asset")} for b in kept
+                           if b.type in ("figure", "table", "unknown")]
     (out_dir / "qc.json").write_text(
         json.dumps(qc, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -191,7 +220,9 @@ def main(argv: list[str] | None = None) -> int:
                     f"{e}\n\n{traceback.format_exc()}", encoding="utf-8")
                 print(f"[fail] {pdf.name}: {e}", file=sys.stderr)
     finally:
-        release_formula_ocr()  # 批处理结束卸载公式模型、清空显存
+        if not args.no_formula_check:
+            from .formula.recognizer import release_formula_ocr
+            release_formula_ocr()
 
     print(f"完成: {n_ok} 成功, {n_fail} 失败")
     return 0 if n_fail == 0 else 2
