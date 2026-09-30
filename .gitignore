@@ -9,6 +9,7 @@ wheels/
 *.skill
 # 本地开发文档（开发计划、供应商实测记录等）
 docs/development/
+docs/*.local.md
 # 本机绝对路径的便捷脚本
 proofparse.bat
 proofparse.toml
