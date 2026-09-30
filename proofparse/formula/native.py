@@ -278,7 +278,8 @@ def number_candidates(characters: list[dict], target: list[float],
             'candidates': found}
 
 
-def analyze(evidence: dict, a: str, b: str, *, numbers: dict | None = None) -> dict:
+def analyze(evidence: dict, candidates: dict[str, str], *, numbers: dict | None = None) -> dict:
+    """Check each named LaTeX candidate against the glyphs inside the target box."""
     from .geometry import script_constraint, matrix_constraint
     chars = [c for c in evidence['characters'] if c['in_target'] and visible(c)]
     geometry_chars = list(chars)
@@ -294,7 +295,7 @@ def analyze(evidence: dict, a: str, b: str, *, numbers: dict | None = None) -> d
     result['findings'].extend({'type': 'glyph_mapping_conflict', 'source_index': c['source_index'],
                                'effective_text': symbol(c), 'conflicts': c['mapping_conflicts']}
                               for c in chars if c.get('mapping_conflicts'))
-    for name, text in (('parser', a), ('formula_ocr', b)):
+    for name, text in candidates.items():
         parsed = candidate_atoms(text)
         count_check, count_findings = count_constraint(chars, parsed, text, result['number_association'])
         parsed['count_check'] = count_check if text else {

@@ -12,7 +12,7 @@ def characters(text):
 
 class CountTests(unittest.TestCase):
     def findings(self, chars, latex, **kwargs):
-        result = analyze({'characters': chars}, latex, '', **kwargs)
+        result = analyze({'characters': chars}, {'parser': latex, 'formula_ocr': ''}, **kwargs)
         return result, [f for f in result['findings'] if f['type'] == 'count_constraint']
 
     def test_extra_xi_missing_parenthesis_and_zero_as_theta(self):

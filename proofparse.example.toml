@@ -1,0 +1,31 @@
+# ProofParse configuration. Copy to proofparse.toml (or %APPDATA%/proofparse/config.toml,
+# ~/.config/proofparse/config.toml, or point PROOFPARSE_CONFIG at it). The installer writes it.
+
+[pipeline]
+layout = "mineru_pipeline"                            # engine providing regions and reading order
+formula = ["mineru_pipeline", "pp_formulanet_plus_m"] # candidate sources, in preference order
+render_scale = 3.0                                    # crop resolution (pixels per PDF point)
+
+# Each engine runs in its own interpreter; keep Paddle and PyTorch CUDA stacks apart.
+[engines.mineru_pipeline]
+python = 'D:\DevTools\Conda\envs\litparse\python.exe'
+device = "auto"
+
+[engines.pp_formulanet_plus_m]
+python = 'D:\DevTools\Conda\envs\litparse\python.exe'
+batch_size = 16
+
+# [engines.pp_formulanet_plus_l]
+# python = '<env with paddlepaddle-gpu + mineru processors>'
+# model_dir = '<exported PP-FormulaNet_plus-L inference model>'
+
+[escalation]
+mode = "agent"          # agent: export tasks for the controlling agent | api: call the API below | none
+
+[escalation.api]
+base_url = ""           # OpenAI-compatible endpoint, e.g. https://api.example.com/v1
+model = ""
+key_env = "PROOFPARSE_API_KEY"
+concurrency = 4
+max_requests = 200
+max_output_tokens = 4096

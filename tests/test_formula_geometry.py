@@ -19,7 +19,7 @@ def matrix():
 
 class GeometryTests(unittest.TestCase):
     def check(self, chars, latex):
-        return analyze({'characters': chars}, latex, '')
+        return analyze({'characters': chars}, {'parser': latex, 'formula_ocr': ''})
 
     def test_unique_script_mismatch_and_nested_role_paths(self):
         chars = [char('x', 0, 10), char('a', 1, 20, 54, 7), char('i', 2, 26, 50, 4.5)]

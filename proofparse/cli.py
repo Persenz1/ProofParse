@@ -1,235 +1,204 @@
-"""命令行入口：proofparse paper.pdf | proofparse ./pdf_folder/
+"""Command line. Every command is resumable; `status` always says what to run next.
 
-全流程编排：
-    parse (MinerU)
-      -> 文本覆盖率检查与自动补回（coverage）
-      -> References 截断 / Figure-Table 过滤（filtering）
-      -> 语义 Markdown 构建（markdown）
-      -> 本地 QC（qc）+ 复核图生成（review_assets）
-
-输出结构：
-    <output_root>/<stem>/
-        ├── <stem>.md
-        ├── document.json      （统一中间模型，含被丢弃块，供追溯）
-        ├── qc.json            （auto-fixed / needs-review 分级）
-        ├── review_assets/     （needs_review 警告的裁剪图/整页图）
-        └── _mineru_raw/       （parser 原始输出）
+    proofparse run PDF_OR_DIR... -o OUT      parse (resumes unfinished stages)
+    proofparse run --resume OUT              continue an existing output directory
+    proofparse status OUT [--json]           progress, blocking items and the next command
+    proofparse tasks export OUT [-o FILE]    unresolved items for the controlling agent
+    proofparse tasks import OUT ANSWERS      validate and apply the agent's answers
+    proofparse tasks api OUT                 answer unresolved items with the configured API
+    proofparse export OUT -o DELIVERY        Markdown + images per paper
+    proofparse engines                       registered engines and configured interpreters
+    proofparse gold build ARXIV_ROOT         build formula gold data from LaTeX sources
+    proofparse bench formula GOLD_ROOT -e A,B   score formula engines on the gold set
+    proofparse bench inline GOLD_ROOT        score text-layer inline-math detection
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
-import traceback
-import shutil
-import os
 from pathlib import Path
 
-from . import config
-from .models.document import Document
-from .normalize.coverage import check_coverage
-from .normalize.filtering import apply_filtering
-from .normalize.markdown import build_markdown
-from .formula.qc import run_qc
-from .parsers.mineru_parser import MinerUParser
-from .pdf.render import render_crop, render_page
-
-_PARSERS = {"mineru": MinerUParser}
+from . import config as config_mod
+from . import engines, pipeline
+from .ir import read_json
+from .stages import assemble, escalate
 
 
-def pdf_hash(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def _pdfs(inputs: list[str]) -> list[Path]:
+    found = []
+    for raw in inputs:
+        path = Path(raw)
+        if path.is_dir():
+            found += sorted(path.glob("*.pdf"))
+        elif path.is_file():
+            found.append(path)
+        else:
+            raise FileNotFoundError(raw)
+    if not found:
+        raise FileNotFoundError("no PDF found in the given inputs")
+    return found
 
 
-def _generate_review_assets(qc: dict, pdf_path: Path, out_dir: Path) -> None:
-    """为每条 needs_review 警告生成复核图：有 bbox 裁剪区域，无 bbox 渲染整页。"""
-    assets_dir = out_dir / "review_assets"
-    if assets_dir.exists():
-        for old in assets_dir.glob("*.png"):  # 清除上次运行的残留
-            old.unlink()
-    for n, w in enumerate(qc["warnings"]):
-        w["id"] = f"{w['id']}_{n}"  # 同页多条警告避免文件名冲突
-        try:
-            if w.get("bbox"):
-                out = assets_dir / f"{w['id']}.png"
-                render_crop(pdf_path, w["page"], w["bbox"], out)
-            elif w.get("page") is not None:
-                out = assets_dir / f"{w['id']}_page.png"
-                render_page(pdf_path, w["page"], out)
-            else:
-                continue
-            w["review_asset"] = str(out.relative_to(out_dir))
-        except Exception as e:
-            w["review_asset_error"] = str(e)
-
-    # 双识别判定为 REVIEW 的公式也配裁剪图
-    fc = qc.get("formula_check") or {}
-    for kind in ("display", "inline"):
-        for n, r in enumerate(fc.get(kind, [])):
-            if r.get("verdict") != "REVIEW" or not r.get("bbox"):
-                continue
-            try:
-                out = assets_dir / f"formula_{kind}_{n}_p{r['page']}.png"
-                if kind == "display":
-                    render_crop(pdf_path, r["page"], r["bbox"], out)  # 1000 归一化
-                else:
-                    # inline span 的 bbox 是 PDF 点，先转归一化
-                    import pypdfium2 as pdfium
-                    pdf = pdfium.PdfDocument(str(pdf_path))
-                    w_pt, h_pt = pdf[r["page"]].get_size()
-                    pdf.close()
-                    bb = r["bbox"]
-                    norm = [bb[0] / w_pt * 1000, bb[1] / h_pt * 1000,
-                            bb[2] / w_pt * 1000, bb[3] / h_pt * 1000]
-                    render_crop(pdf_path, r["page"], norm, out)
-                r["review_asset"] = str(out.relative_to(out_dir))
-            except Exception as e:
-                r["review_asset_error"] = str(e)
-
-
-def process_pdf(pdf_path: Path, output_root: Path, parser_name: str = "mineru",
-                force: bool = False, formula_check: bool = True) -> Path:
-    pdf_path = Path(pdf_path)
-    out_dir = output_root / pdf_path.stem
-    md_path = out_dir / f"{pdf_path.stem}.md"
-
-    source_hash = pdf_hash(pdf_path)
-    if md_path.exists() and (out_dir / "qc.json").exists() and not force:
-        saved = json.loads((out_dir / "document.json").read_text(encoding="utf-8"))
-        if saved.get("pdf_sha256") != source_hash:
-            raise ValueError(f"同名 PDF 内容已改变，请使用不同输出目录或 -f：{pdf_path}")
-        if saved.get("schema_version") == 2:
-            print(f"[skip] 已存在且源文件一致: {md_path}")
-            return md_path
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    # 由调用者为本次任务指定临时工作根；默认保留旧版路径，跨平台可运行。
-    scratch = os.environ.get("PROOFPARSE_WORK_DIR")
-    work_dir = Path(scratch) / pdf_path.stem / "raw" if scratch else out_dir / "_mineru_raw"
-
-    # 1) 解析
-    device = config.resolve_device()
-    print(f"[device] {device} | Python: {sys.executable}", flush=True)
-    parser = _PARSERS[parser_name]()
-    doc: Document = parser.parse(pdf_path, work_dir, asset_dir=out_dir)
-    shutil.copy2(pdf_path, out_dir / "source.pdf")
-    doc.source_pdf = "source.pdf"
-    for b in doc.blocks:
-        if b.type in ("figure", "table", "unknown") and not b.extra.get("asset") and b.bbox and b.page is not None:
-            asset = Path("assets") / f"{b.block_id}.png"
-            render_crop(pdf_path, b.page, b.bbox, out_dir / asset)
-            b.extra["asset"] = asset.as_posix()
-
-    # 2) 文本覆盖率检查（在过滤前做，References 截断不算召回丢失）
-    coverage_result = check_coverage(pdf_path, doc.blocks)
-
-    # 3) 确定性过滤
-    kept, dropped, stats = apply_filtering(doc.blocks)
-
-    # 4) Markdown 构建
-    markdown = build_markdown(doc, kept)
-    md_path.write_text(markdown, encoding="utf-8")
-
-    # 5) document.json（含全部块 + 是否进入 markdown）
-    document_json = doc.to_dict()
-    document_json["pdf_sha256"] = source_hash
-    import uuid
-    document_json["parse_id"] = uuid.uuid4().hex
-    document_json["schema_version"] = 2
-    kept_ids = {id(b) for b in kept}
-    for b_dict, b_obj in zip(document_json["blocks"], doc.blocks):
-        b_dict["in_markdown"] = id(b_obj) in kept_ids
-    (out_dir / "document.json").write_text(
-        json.dumps(document_json, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    # 6) QC + 公式双识别 + 复核图
-    qc = run_qc(doc, kept, dropped, stats, coverage_result)
-    if formula_check:
-        try:
-            from .formula.double_check import double_check
-            double_check(pdf_path, out_dir, kept, qc, device=device, work_dir=work_dir)
-        except Exception as e:  # 双识别失败不中断主流程
-            qc["formula_check"] = {"error": str(e)}
+def _status(out: Path, cfg) -> dict:
+    papers = pipeline.load_papers(out)
+    rows, blocking_total, incomplete = [], 0, False
+    for p in papers:
+        done = [s for s in pipeline.STAGES if p.done(s)]
+        blocked = len(assemble.blocking(p.doc)) if p.done("reconcile") else None
+        failed = (p.dir / "error.log").is_file() and len(done) < len(pipeline.STAGES)
+        incomplete |= len(done) < len(pipeline.STAGES)
+        blocking_total += blocked or 0
+        rows.append({"paper": p.key, "stages_done": done, "blocking": blocked, "failed": failed})
+    if incomplete:
+        nxt = f"proofparse run --resume {out}"
+    elif blocking_total and cfg.escalation == "agent":
+        nxt = f"proofparse tasks export {out}  (then answer the tasks and: proofparse tasks import {out} ANSWERS.json)"
+    elif blocking_total and cfg.escalation == "api":
+        nxt = f"proofparse tasks api {out}"
+    elif blocking_total:
+        nxt = f"escalation is disabled; deliver with: proofparse export {out} -o DELIVERY --allow-unresolved"
     else:
-        qc["formula_check"] = {"status": "not_run"}
-    _generate_review_assets(qc, pdf_path, out_dir)
-    import pypdfium2 as pdfium
-    with pdfium.PdfDocument(str(pdf_path)) as pdf:
-        n_pages = len(pdf)
-    qc["page_review"] = []
-    for page in range(n_pages):
-        asset = Path("review_assets") / f"page_{page:04d}.png"
-        render_page(pdf_path, page, out_dir / asset)
-        qc["page_review"].append({"page": page, "review_asset": asset.as_posix()})
-    qc["visual_review"] = [{"block_id": b.block_id, "page": b.page, "bbox": b.bbox,
-                            "review_asset": b.extra.get("asset")} for b in kept
-                           if b.type in ("figure", "table", "unknown")]
-    (out_dir / "qc.json").write_text(
-        json.dumps(qc, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    fc = qc.get("formula_check") or {}
-    print(f"[ok] {pdf_path.name} -> {md_path}  "
-          f"(blocks {stats['n_blocks_kept']}/{stats['n_blocks_total']}, "
-          f"auto-fixed {qc['n_auto_fixed']}, "
-          f"needs-review {qc['summary']['n_needs_review']}, "
-          f"eq-review {fc.get('n_display_review', '-')}/{fc.get('n_display_checked', '-')})")
-    return md_path
+        nxt = f"proofparse export {out} -o DELIVERY"
+    return {"papers": rows, "blocking": blocking_total, "escalation": cfg.escalation, "next": nxt}
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(
-        prog="proofparse",
-        description="本地优先的科研 PDF -> Markdown 解析工具（MinerU pipeline 后端）",
-    )
-    ap.add_argument("input", help="PDF 文件或包含 PDF 的目录")
-    ap.add_argument("-o", "--output", default=str(config.DEFAULT_OUTPUT_ROOT),
-                    help="输出根目录")
-    ap.add_argument("-p", "--parser", default="mineru", choices=list(_PARSERS))
-    ap.add_argument("-f", "--force", action="store_true", help="已有输出时强制重跑")
-    ap.add_argument("--no-formula-check", action="store_true",
-                    help="跳过公式双识别（PP-FormulaNet+ 二次复核）")
+    ap = argparse.ArgumentParser(prog="proofparse", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--config", type=Path, help="config.toml (default: see proofparse/config.py)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("run")
+    p.add_argument("inputs", nargs="*")
+    p.add_argument("-o", "--output", type=Path)
+    p.add_argument("--resume", type=Path, metavar="OUT")
+    p.add_argument("--stages", help=f"comma list from {','.join(pipeline.STAGES)}")
+    p.add_argument("-f", "--force", action="store_true", help="re-run selected stages even if done")
+
+    p = sub.add_parser("status")
+    p.add_argument("output", type=Path)
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("tasks")
+    p.add_argument("action", choices=["export", "import", "api"])
+    p.add_argument("output", type=Path)
+    p.add_argument("answers", nargs="?", type=Path)
+    p.add_argument("-o", "--out-file", type=Path)
+
+    p = sub.add_parser("export")
+    p.add_argument("output", type=Path)
+    p.add_argument("-o", "--delivery", type=Path, required=True)
+    p.add_argument("--allow-unresolved", action="store_true")
+
+    sub.add_parser("engines")
+
+    p = sub.add_parser("gold")
+    p.add_argument("action", choices=["build"])
+    p.add_argument("root", type=Path)
+    p.add_argument("--only", nargs="*")
+
+    p = sub.add_parser("bench")
+    p.add_argument("kind", choices=["formula", "inline"])
+    p.add_argument("root", type=Path)
+    p.add_argument("-e", "--engines", default="")
+    p.add_argument("--kinds", default="display,inline")
+    p.add_argument("--limit", type=int)
+
     args = ap.parse_args(argv)
+    cfg = config_mod.load(args.config)
 
-    input_path = Path(args.input)
-    output_root = Path(args.output)
+    if args.cmd == "run":
+        if args.resume:
+            out = args.resume
+            papers = pipeline.load_papers(out)
+        else:
+            if not args.output or not args.inputs:
+                ap.error("run needs inputs and -o OUT, or --resume OUT")
+            out = args.output
+            papers = pipeline.open_papers(_pdfs(args.inputs), out)
+        stages = tuple(args.stages.split(",")) if args.stages else pipeline.STAGES
+        failed = pipeline.run(papers, cfg, out / "_work", stages=stages, force=args.force)
+        status = _status(out, cfg)
+        print(json.dumps({"failed": failed, "blocking": status["blocking"], "next": status["next"]},
+                         ensure_ascii=False, indent=1))
+        return 2 if failed else 0
 
-    if input_path.is_dir():
-        pdfs = sorted(input_path.glob("*.pdf"))
-        if not pdfs:
-            print(f"目录中没有 PDF: {input_path}", file=sys.stderr)
-            return 1
-    elif input_path.is_file():
-        pdfs = [input_path]
-    else:
-        print(f"输入不存在: {input_path}", file=sys.stderr)
-        return 1
+    if args.cmd == "status":
+        status = _status(args.output, cfg)
+        if args.json:
+            print(json.dumps(status, ensure_ascii=False, indent=1))
+        else:
+            for row in status["papers"]:
+                print(f"{row['paper']}: {len(row['stages_done'])}/{len(pipeline.STAGES)} stages, "
+                      f"blocking {row['blocking'] if row['blocking'] is not None else '-'}"
+                      + ("  FAILED (see error.log)" if row["failed"] else ""))
+            print(f"next: {status['next']}")
+        return 0
 
-    n_ok, n_fail = 0, 0
-    try:
-        for pdf in pdfs:
+    if args.cmd == "tasks":
+        papers = pipeline.load_papers(args.output)
+        if args.action == "export":
+            path = args.out_file or args.output / "tasks.json"
+            n = escalate.export_tasks(papers, path)
+            print(f"{n} tasks -> {path}")
+        elif args.action == "import":
+            if not args.answers:
+                ap.error("tasks import needs ANSWERS.json")
+            result = escalate.apply_answers(papers, read_json(args.answers))
+            _reassemble(papers)
+            print(json.dumps(result, ensure_ascii=False, indent=1))
+        else:
+            result = escalate.resolve_with_api(papers, cfg, args.output / "_work")
+            _reassemble(papers)
+            print(json.dumps({k: v for k, v in result.items() if k != "errors"} | {"n_errors": len(result["errors"])},
+                             ensure_ascii=False, indent=1))
+        print(f"next: {_status(args.output, cfg)['next']}")
+        return 0
+
+    if args.cmd == "export":
+        code = 0
+        for paper in pipeline.load_papers(args.output):
             try:
-                process_pdf(pdf, output_root, args.parser, args.force,
-                            formula_check=not args.no_formula_check)
-                n_ok += 1
-            except Exception as e:  # 单篇失败不终止批处理
-                n_fail += 1
-                err_dir = output_root / pdf.stem
-                err_dir.mkdir(parents=True, exist_ok=True)
-                (err_dir / "error.log").write_text(
-                    f"{e}\n\n{traceback.format_exc()}", encoding="utf-8")
-                print(f"[fail] {pdf.name}: {e}", file=sys.stderr)
-    finally:
-        if not args.no_formula_check:
-            from .formula.recognizer import release_formula_ocr
-            release_formula_ocr()
+                md = assemble.export(paper, args.delivery, allow_unresolved=args.allow_unresolved)
+                print(f"[ok] {md}")
+            except ValueError as exc:
+                print(f"[blocked] {exc}", file=sys.stderr)
+                code = 2
+        return code
 
-    print(f"完成: {n_ok} 成功, {n_fail} 失败")
-    return 0 if n_fail == 0 else 2
+    if args.cmd == "engines":
+        print(f"config: {cfg.path or '(none; defaults)'}  layout={cfg.layout}  formula={cfg.formula}  "
+              f"escalation={cfg.escalation}")
+        for name, spec in sorted(engines.REGISTRY.items()):
+            print(f"  {name:24} tasks={','.join(sorted(spec.tasks)):12} python={cfg.engine(name).python}")
+        return 0
+
+    if args.cmd == "gold":
+        from .gold.arxiv import build_all
+        results = build_all(args.root, only=args.only)
+        bad = [r for r in results if r["status"] != "ok"]
+        for r in bad:
+            print(f"[{r['status']}] {r['paper']}: {r.get('reason')}", file=sys.stderr)
+        return 0 if not bad else 2
+
+    if args.cmd == "bench":
+        from .eval import bench
+        if args.kind == "formula":
+            names = [n for n in args.engines.split(",") if n]
+            if not names:
+                ap.error("bench formula needs -e ENGINE[,ENGINE...]")
+            bench.bench_formula(args.root, cfg, names, kinds=tuple(args.kinds.split(",")), limit=args.limit)
+        else:
+            bench.bench_inline(args.root)
+        return 0
+    return 1
+
+
+def _reassemble(papers) -> None:
+    for paper in papers:
+        assemble.write_working(paper)
+        paper.save()
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ def evidence(parts):
 
 class BoundaryTests(unittest.TestCase):
     def findings(self, source):
-        return [f for f in analyze(source, 'x', '')['findings'] if f['type'] == 'boundary_suggestion']
+        return [f for f in analyze(source, {'parser': 'x', 'formula_ocr': ''})['findings'] if f['type'] == 'boundary_suggestion']
 
     def test_trailing_reference_keeps_math_one_in_same_font(self):
         source = evidence([('q', 'Math'), ('1', 'Prose'), ('<', 'Math'), ('1(Fig.3', 'Prose')])
@@ -43,7 +43,7 @@ class BoundaryTests(unittest.TestCase):
     def test_missing_page_font_is_explicitly_unreliable(self):
         source = evidence([('x', 'Math')])
         del source['body_font']
-        self.assertEqual(analyze(source, 'x', '')['boundary_check']['status'], 'unreliable')
+        self.assertEqual(analyze(source, {'parser': 'x', 'formula_ocr': ''})['boundary_check']['status'], 'unreliable')
 
 
 if __name__ == '__main__':

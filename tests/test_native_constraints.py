@@ -14,7 +14,7 @@ def glyph(text, index, x, y=50, *, bold=False, font=1):
 class NativeConstraintTests(unittest.TestCase):
     def test_font_scopes_and_repeated_symbol_ambiguity(self):
         chars = [glyph('F', 0, 10, bold=True), glyph('F', 1, 40)]
-        result = analyze({'characters': chars}, r'F+F', r'\mathbf{F}+F')
+        result = analyze({'characters': chars}, {'parser': r'F+F', 'formula_ocr': r'\mathbf{F}+F'})
         findings = result['findings']
         self.assertEqual([(f['candidate'], f['symbol']) for f in findings], [('parser', 'F')])
         self.assertTrue(all(a['status'] == 'ambiguous' for a in
@@ -26,7 +26,7 @@ class NativeConstraintTests(unittest.TestCase):
 
     def test_unknown_macro_and_missing_symbol_do_not_prove_font_error(self):
         chars = [glyph('F', 0, 10, bold=True)]
-        result = analyze({'characters': chars}, r'\custom F', 'G')
+        result = analyze({'characters': chars}, {'parser': r'\custom F', 'formula_ocr': 'G'})
         self.assertEqual(result['findings'], [])
         self.assertEqual(result['candidates']['parser']['unsupported_commands'], [r'\custom'])
 
@@ -35,7 +35,7 @@ class NativeConstraintTests(unittest.TestCase):
         mapped = apply_glyph_map(chars, [{'font_xref': 1, 'glyph_id': ord('K'), 'text': 'K',
                                          'styles': ['calligraphic'], 'source': {'page': 0}}])
         self.assertNotIn('mapped_styles', mapped[1])
-        result = analyze({'characters': mapped}, 'K+K', r'\mathcal{K}+K')
+        result = analyze({'characters': mapped}, {'parser': 'K+K', 'formula_ocr': r'\mathcal{K}+K'})
         self.assertEqual(len(result['findings']), 1)
         self.assertEqual(result['findings'][0]['style'], 'calligraphic')
 
@@ -53,7 +53,7 @@ class NativeConstraintTests(unittest.TestCase):
 
     def test_missing_number_is_separate_from_body_font_and_prose(self):
         chars = [glyph(c, i, i*5) for i, c in enumerate('q1(Fig.3')]
-        result = analyze({'characters': chars}, r'q_1', r'q_1', numbers={
+        result = analyze({'characters': chars}, {'parser': r'q_1', 'formula_ocr': r'q_1'}, numbers={
             'status': 'associated_by_layout', 'candidates': [{'value': '9'}]})
         self.assertEqual([f['type'] for f in result['findings']],
                          ['number_constraint', 'number_constraint', 'math_prose_boundary'])
@@ -61,7 +61,7 @@ class NativeConstraintTests(unittest.TestCase):
     def test_invisible_text_cannot_supply_font_constraints(self):
         char = glyph('F', 0, 0, bold=True)
         char['render_type'] = 3
-        self.assertEqual(analyze({'characters': [char]}, 'F', 'F')['findings'], [])
+        self.assertEqual(analyze({'characters': [char]}, {'parser': 'F', 'formula_ocr': 'F'})['findings'], [])
 
 
 if __name__ == '__main__':

@@ -98,14 +98,3 @@ def compare_latex(parser_latex: str, ocr_latex: str) -> dict:
     return {"body_relation": relation, "number_relation": numbers,
             "numbers_a": [t.raw for t in a_tags], "numbers_b": [t.raw for t in b_tags],
             "differences": diffs[:8], "difference_count": len(diffs)}
-
-
-def verdict(parser_latex: str, ocr_latex: str, threshold: float = 0.90) -> tuple[str, float]:
-    comparison = compare_latex(parser_latex, ocr_latex)
-    # Legacy PASS means candidate agreement only. Layout/number differences still
-    # require review; similarity is never an acceptance rule.
-    from .qc import check_latex
-    agreement = (comparison["body_relation"] in ("exact", "notation")
-                 and comparison["number_relation"] == "equal"
-                 and not check_latex(parser_latex) and not check_latex(ocr_latex))
-    return ("PASS" if agreement else "REVIEW", round(latex_similarity(parser_latex, ocr_latex), 4))

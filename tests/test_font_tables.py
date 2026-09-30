@@ -4,7 +4,7 @@ import unittest
 
 from proofparse.formula.fonttables import font_table
 from proofparse.formula.native import apply_glyph_map, analyze
-from proofparse.pdf.fontnames import embedded_glyph_names
+from proofparse.preprocess.fontnames import embedded_glyph_names
 from test_native_constraints import glyph
 
 
@@ -45,12 +45,12 @@ class FontTableTests(unittest.TestCase):
         mapped = apply_glyph_map([char], confirmed)
         self.assertEqual(mapped[0]['mapped_text'], 'B')
         self.assertEqual(mapped[0]['mapping_source'], 'confirmed')
-        result = analyze({'characters': mapped}, 'B', 'B')
+        result = analyze({'characters': mapped}, {'parser': 'B', 'formula_ocr': 'B'})
         self.assertIn('glyph_mapping_conflict', [f['type'] for f in result['findings']])
 
     def test_white_font_calligraphy_creates_a_constraint_without_rewriting(self):
         mapped = apply_glyph_map([glyph('K', 0, 10) | {'font': 'CMSY10'}], [])
-        result = analyze({'characters': mapped}, 'K', r'\mathcal{K}')
+        result = analyze({'characters': mapped}, {'parser': 'K', 'formula_ocr': r'\mathcal{K}'})
         fonts = [f for f in result['findings'] if f['type'] == 'font_constraint']
         self.assertEqual([f['candidate'] for f in fonts], ['parser'])
 
