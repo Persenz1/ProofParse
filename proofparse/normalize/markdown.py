@@ -56,10 +56,6 @@ def build_markdown(doc: Document, blocks, *, delivery: bool = False) -> str:
             lines.append(f"{hashes} {_clean_inline(b.content)}")
             lines.append("")
         elif b.type == BLOCK_EQUATION:
-            if delivery and b.extra.get('delivery_fallback'):
-                lines.extend([f"![公式原图]({b.extra['delivery_fallback']})", "",
-                              "[公式 LaTeX 结构异常，暂以原图保留，待复查。]", ""])
-                continue
             lines.append("$$")
             lines.append(b.content)
             lines.append("$$")

@@ -5,16 +5,12 @@
 - choice=ocr/custom 且 confidence >= 阈值：替换 document.json 中对应块内容后重建 md；
 - 其余（低置信 / 裁决失败）：不改 md，条目标记为 still_open 交给人工。
 
-定位规则：
-- formula_display：qc 条目带 block_index，直接定位 document.json 块；
-- formula_inline：按 page + parser 候选（空白柔性匹配）定位段落块并替换首个命中；
-- text_warning：parser_text 是段落前缀，按页 + 前缀匹配定位，
-  choice=ocr 时用 missing_text 换前缀，choice=custom 时用 corrected_latex 换前缀。
+定位使用稳定 block_id；行内修正只匹配完整数学片段。
+段落编辑保护已有数学，页内补段检查同页/邻页已有内容。
 """
 from __future__ import annotations
 
 import json
-import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,19 +18,10 @@ from typing import Optional
 
 from ..models.document import Block, Document, Metadata
 from ..normalize.markdown import build_markdown
-from .collect import KIND_DISPLAY, KIND_INLINE, KIND_TEXT, ReviewItem, get_entry
+from .collect import KIND_INLINE, ReviewItem, get_entry
+from .patches import duplicate_insert, equation_patch, inline_patch, prose_patch
 
 APPLY_CONFIDENCE = 0.7
-
-
-def _flex_pattern(candidate: str) -> re.Pattern:
-    """候选串 -> 正则：非空白字符转义，原有空白匹配套 \\s*。"""
-    parts = [re.escape(tok) for tok in re.split(r"\s+", candidate.strip()) if tok]
-    return re.compile(r"\s*".join(parts))
-
-
-def _norm(s: str) -> str:
-    return re.sub(r"\s+", "", s or "")
 
 
 def _load_document(paper_dir: Path) -> tuple[Document, list[dict]]:
@@ -98,7 +85,8 @@ def apply_to_document(paper_dir: Path, item: ReviewItem, verdict: dict) -> str:
             return "skipped:stale_page"
         if choice == "parser": return "confirmed"
         if choice != "custom": return "skipped:page_requires_edits"
-        edits, inserts = verdict.get("edits", []), verdict.get("inserts", [])
+        edits = [dict(edit) for edit in verdict.get("edits", [])]
+        inserts = [dict(insert) for insert in verdict.get("inserts", [])]
         metadata = verdict.get("metadata", {})
         if not edits and not inserts and not metadata: return "skipped:no_edits"
         if metadata:
@@ -124,10 +112,23 @@ def apply_to_document(paper_dir: Path, item: ReviewItem, verdict: dict) -> str:
                 return "skipped:empty_edit"
             if edit.get("type", block.type) not in ("paragraph","heading","title","equation","list","code"):
                 return "skipped:invalid_reclassification"
+            new_type = edit.get("type", block.type)
+            if block.type == "equation" and new_type != "equation":
+                return "skipped:protected_equation"
+            if new_type == "equation":
+                corrected, error = equation_patch(block.content, edit["content"], edit.get("number_correction"))
+                if error: return "skipped:" + error
+                edit["content"] = corrected
+            elif new_type != "code" or block.type != "code":
+                error = prose_patch(block.content, edit["content"], edit.get("math_edits"))
+                if error: return "skipped:" + error
             if "after_block_id" in edit:
                 anchor = edit["after_block_id"]
                 if anchor is not None and (anchor == block.block_id or anchor not in by_id or doc.blocks[by_id[anchor]].page != item.page):
                     return "skipped:invalid_move_anchor"
+        updated = {edit["block_id"]: edit["content"] for edit in edits}
+        nearby = [updated.get(b.block_id, b.content) for b, raw in zip(doc.blocks, block_dicts)
+                  if b.page is not None and abs(b.page - item.page) <= 1 and raw.get("in_markdown")]
         for insert in inserts:
             anchor = insert.get("after_block_id")
             if anchor is not None and (anchor not in by_id or doc.blocks[by_id[anchor]].page != item.page):
@@ -139,6 +140,16 @@ def apply_to_document(paper_dir: Path, item: ReviewItem, verdict: dict) -> str:
                     or bb[0] >= bb[2] or bb[1] >= bb[3] or not isinstance(insert.get("content"), str)
                     or (not insert["content"].strip() and insert["type"] not in ("figure", "table"))):
                 return "skipped:invalid_insert"
+            if insert["type"] not in ("figure", "table"):
+                if duplicate_insert(insert["content"], nearby): return "skipped:duplicate_insert"
+                nearby.append(insert["content"])
+            if insert["type"] == "equation":
+                corrected, error = equation_patch("", insert["content"])
+                if error: return "skipped:" + error
+                insert["content"] = corrected
+            elif insert["type"] in ("paragraph", "heading", "list"):
+                from ..formula.syntax import math_spans
+                if not math_spans(insert["content"])[1]: return "skipped:unbalanced_math_delimiters"
         for key,value in metadata.items(): setattr(doc.metadata,key,value)
         for edit in edits:
             block = doc.blocks[by_id[edit["block_id"]]]
@@ -214,16 +225,20 @@ def apply_to_document(paper_dir: Path, item: ReviewItem, verdict: dict) -> str:
     if not isinstance(corrected, str) or not corrected.strip(): return "skipped:no_corrected_text"
     if item.kind == KIND_INLINE:
         if not item.candidate_a: return "skipped:empty_span"
-        matches = list(_flex_pattern(item.candidate_a).finditer(block.content))
-        if len(matches) != 1: return "skipped:ambiguous_span"
-        m = matches[0]
-        block.content = block.content[:m.start()] + corrected + block.content[m.end():]
+        corrected, error = inline_patch(block.content, item.candidate_a, corrected)
+        if error: return "skipped:" + error
+        block.content = corrected
     elif item.kind == "visual":
         if block.type != "table": return "skipped:recrop_required"
         block.content = corrected
         block.extra["structure_verified"] = True
     else:
         if block.content != item.candidate_a: return "skipped:candidate_not_full_target"
+        if block.type == "equation" or item.likely_cause == "orphan_equation_number":
+            corrected, error = equation_patch(block.content, corrected, verdict.get("number_correction"))
+        else:
+            error = prose_patch(block.content, corrected, verdict.get("math_edits"))
+        if error: return "skipped:" + error
         block.content = corrected
         if item.likely_cause == 'orphan_equation_number':
             block.type = 'equation'
@@ -294,7 +309,7 @@ def paper_status(qc: dict) -> str:
     fc = qc.get("formula_check") or {}
     for kind in ("display", "inline"):
         for r in fc.get(kind, []):
-            if r.get("verdict") == "REVIEW":
+            if r.get("verdict") == "REVIEW" or r.get("native_review_required"):
                 pending.append(r.get("final_verdict"))
     if not pending:
         return "auto_pass"

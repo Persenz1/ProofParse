@@ -22,6 +22,7 @@ from pypdf import PdfReader
 
 from ..models.document import BLOCK_PARAGRAPH, Block
 from .textnorm import dehyphenate, fix_dropcap, normalize_for_match
+from ..formula.syntax import orphan_number
 
 _LATEX_CMD_RE = re.compile(r"\\[a-zA-Z]+")
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -188,7 +189,7 @@ def check_orphan_equation_numbers(blocks: list[Block]) -> list[dict]:
     warnings = []
     for b in blocks:
         if (b.type != BLOCK_PARAGRAPH or not b.bbox or b.extra.get('merged_into')
-                or b.bbox[0] < 700 or not re.fullmatch(r'\(\s*\d+[a-z]?\s*\)', b.content.strip())):
+                or b.bbox[0] < 700 or orphan_number(b.content) is None):
             continue
         y = (b.bbox[1] + b.bbox[3]) / 2
         if any(other.page == b.page and other.type == 'equation' and other.bbox

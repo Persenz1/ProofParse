@@ -7,7 +7,7 @@
 
 结果写回 qc.json：
 - formula_check.display / formula_check.inline 全量比对记录
-- math_divergence 警告若全部 span PASS，状态升级为 auto_pass
+- PASS 只记录候选一致；不据此关闭段落覆盖率警告
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import numpy as np
 import pypdfium2 as pdfium
 
 from ..models.document import BLOCK_EQUATION, BLOCK_PARAGRAPH, Block
-from .compare import verdict
+from .compare import compare_latex, verdict
 from .recognizer import get_formula_ocr
 
 RENDER_SCALE = 3.0
@@ -115,6 +115,7 @@ def double_check(pdf_path: Path, out_dir: Path, kept_blocks: list[Block],
             "block_id": b.block_id, "page": b.page, "bbox": b.bbox,
             "verdict": v, "similarity": sim,
             "parser": b.content, "formula_ocr": ocr_latex,
+            "comparison": compare_latex(b.content, ocr_latex),
         })
 
     # ---- math_divergence 段落的 inline span 复核 ----
@@ -144,10 +145,10 @@ def double_check(pdf_path: Path, out_dir: Path, kept_blocks: list[Block],
             v, sim = verdict(s["content"], ocr_latex)
             span_results.append({"bbox": s["bbox"], "verdict": v, "similarity": sim,
                                  "parser": s["content"],
-                                 "formula_ocr": ocr_latex})
+                                 "formula_ocr": ocr_latex,
+                                 "comparison": compare_latex(s["content"], ocr_latex)})
             inline_records.append({"page": page, "block_id": w.get("block_id"), **span_results[-1]})
         w["formula_spans"] = span_results
-        # 该段落全部行内公式双识别一致 -> 表示分歧，升级为 auto_pass
         # 公式一致不能证明段落没有丢文字，保留原始覆盖率警告。
 
     # ---- 汇总 ----

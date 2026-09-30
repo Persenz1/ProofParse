@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+native = ["pymupdf>=1.24"]
 # Layer 2 公式双识别（GPU 推荐）；MinerU 本体请按 README 安装 mineru[pipeline]
 formula = ["numpy", "torch", "transformers>=4.45"]
 

@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import json
 import hashlib
-import re
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
+from ..formula.compare import compare_latex, verdict as formula_verdict
 
 KIND_TEXT = "text_warning"
 KIND_DISPLAY = "formula_display"
@@ -42,20 +44,59 @@ class ReviewItem:
     block_index: Optional[int] = None    # legacy
     block_id: str | None = None
     input_hash: str = ""
+    issue_id: str = ""
+    issue_type: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
     def uid(self) -> str:
-        return f"{self.paper}::{'/'.join(map(str, self.ref))}"
+        return f"{self.paper}::{self.issue_id or '/'.join(map(str, self.ref))}"
 
 
-def _collect_from_qc(paper: str, qc: dict) -> list[ReviewItem]:
+def ensure_issue_ids(qc: dict) -> bool:
+    """Persist identities independently of list order, evidence and reviewer."""
+    changed = False
+    entries = [entry for section in ("warnings", "page_review", "visual_review")
+               for entry in qc.get(section, [])]
+    entries += [entry for section in ("display", "inline")
+                for entry in (qc.get("formula_check") or {}).get(section, [])]
+    for entry in entries:
+        if not entry.get("issue_id"):
+            entry["issue_id"] = "issue_" + uuid.uuid4().hex
+            changed = True
+    return changed
+
+
+def refresh_formula_comparisons(qc: dict) -> bool:
+    """Reuse stored OCR candidates when comparison rules improve; no inference."""
+    changed = False
+    fc = qc.get("formula_check") or {}
+    for section in ("display", "inline"):
+        for entry in fc.get(section, []):
+            a, b = entry.get("parser", ""), entry.get("formula_ocr", "")
+            state, similarity = formula_verdict(a, b)
+            fields = {"comparison": compare_latex(a, b), "verdict": state, "similarity": similarity}
+            if any(entry.get(k) != v for k, v in fields.items()):
+                entry.update(fields)
+                changed = True
+        if section in fc:
+            key = f"n_{section}_review"
+            count = sum(entry["verdict"] == "REVIEW" for entry in fc[section])
+            if fc.get(key) != count:
+                fc[key] = count
+                changed = True
+    return changed
+
+
+def _collect_from_qc(paper: str, qc: dict, include_agreements: bool = False) -> list[ReviewItem]:
+    ensure_issue_ids(qc)
     items: list[ReviewItem] = []
     for i, w in enumerate(qc.get("warnings", [])):
         if w.get("status") != "needs_review" or w.get("type") == "unassigned_source":
             continue
         items.append(ReviewItem(
-            paper=paper, kind=KIND_DISPLAY if w.get("type") == "latex_sanity" else KIND_TEXT, ref=("warnings", i),
+            paper=paper, kind=KIND_DISPLAY if w.get("type") in ("latex_sanity", "orphan_equation_number") else KIND_TEXT, ref=("warnings", i),
+            issue_id=w["issue_id"], issue_type=w.get("type", "text_warning"),
             page=w.get("page"), bbox=w.get("bbox"),
             candidate_a=w.get("parser_text", ""),
             candidate_b=w.get("missing_text", ""),
@@ -63,15 +104,16 @@ def _collect_from_qc(paper: str, qc: dict) -> list[ReviewItem]:
             likely_cause=w.get("likely_cause", ""),
             review_asset=w.get("review_asset"),
             block_id=w.get("block_id"),
-            extra={"warning_id": w.get("id", ""), "similarity": w.get("similarity")},
+            extra={"problems": w.get("problems", []), "similarity": w.get("similarity")},
         ))
     fc = qc.get("formula_check") or {}
     for kind_key, kind in (("display", KIND_DISPLAY), ("inline", KIND_INLINE)):
         for i, r in enumerate(fc.get(kind_key, [])):
-            if r.get("verdict") != "REVIEW":
+            if r.get("verdict") != "REVIEW" and not include_agreements:
                 continue
             items.append(ReviewItem(
                 paper=paper, kind=kind, ref=("formula_check", kind_key, i),
+                issue_id=r["issue_id"], issue_type="formula_candidate_disagreement",
                 page=r.get("page"), bbox=r.get("bbox"),
                 candidate_a=r.get("parser", ""),
                 candidate_b=r.get("formula_ocr", ""),
@@ -79,7 +121,8 @@ def _collect_from_qc(paper: str, qc: dict) -> list[ReviewItem]:
                 review_asset=r.get("review_asset"),
                 block_index=r.get("block_index"),
                 block_id=r.get("block_id"),
-                extra={"similarity": r.get("similarity")},
+                extra={"similarity": r.get("similarity"),
+                       "comparison": r.get("comparison") or compare_latex(r.get("parser", ""), r.get("formula_ocr", ""))},
             ))
     return items
 
@@ -89,14 +132,39 @@ def collect(output_root: Path, skip_done: bool = True) -> list[ReviewItem]:
     for qc_path in sorted(Path(output_root).glob("*/qc.json")):
         paper_dir = qc_path.parent
         qc = json.loads(qc_path.read_text(encoding="utf-8"))
+        changed = ensure_issue_ids(qc)
+        changed = refresh_formula_comparisons(qc) or changed
         doc = json.loads((paper_dir / "document.json").read_text(encoding="utf-8"))
         blocks = {b.get("block_id"): b for b in doc["blocks"]}
-        paper_items = _collect_from_qc(paper_dir.name, qc)
+        paper_items = _collect_from_qc(paper_dir.name, qc, include_agreements=True)
+        from .native import attach_native
+        attach_native(paper_items, paper_dir, doc)
+        native_items = []
+        for it in paper_items:
+            if it.ref[0] == "formula_check":
+                entry = get_entry(qc, it.ref)
+                if it.review_asset and not entry.get("review_asset"):
+                    entry["review_asset"] = it.review_asset
+                    changed = True
+                native = it.extra.get("native_constraints", {})
+                required = bool(native.get("findings")) if "findings" in native else entry.get("native_review_required", False)
+                if entry.get("native_review_required", False) != required:
+                    entry["native_review_required"] = required
+                    changed = True
+            if it.ref[0] == "formula_check" and get_entry(qc, it.ref).get("verdict") != "REVIEW":
+                if not get_entry(qc, it.ref).get("native_review_required"):
+                    continue
+                it.issue_type = "formula_native_constraint"
+            native_items.append(it)
+        paper_items = native_items
+        if changed:
+            qc_path.write_text(json.dumps(qc, ensure_ascii=False, indent=2), encoding="utf-8")
         for section, kind in (("page_review", KIND_PAGE), ("visual_review", KIND_VISUAL)):
             for i, entry in enumerate(qc.get(section, [])):
                 block = blocks.get(entry.get("block_id"), {})
                 paper_items.append(ReviewItem(
                     paper=paper_dir.name, kind=kind, ref=(section, i),
+                    issue_id=entry["issue_id"], issue_type=kind,
                     page=entry.get("page"), bbox=entry.get("bbox"),
                     candidate_a=block.get("content", ""), candidate_b="",
                     review_asset=entry.get("review_asset"), block_id=entry.get("block_id"),
@@ -120,7 +188,8 @@ def collect(output_root: Path, skip_done: bool = True) -> list[ReviewItem]:
             if block:
                 it.extra["target_content"] = block.get("content", "")
             asset = paper_dir / it.review_asset if it.review_asset else None
-            evidence = {"pdf": doc.get("pdf_sha256"), "kind": it.kind, "page": it.page,
+            evidence = {"pdf": doc.get("pdf_sha256"), "parse_id": doc.get("parse_id"),
+                        "kind": it.kind, "issue_type": it.issue_type, "page": it.page,
                         "a": it.candidate_a, "b": it.candidate_b, "block": it.block_id,
                         "extra": it.extra, "bbox": it.bbox,
                         "image": hashlib.sha256(asset.read_bytes()).hexdigest() if asset and asset.is_file() else None}
@@ -129,7 +198,9 @@ def collect(output_root: Path, skip_done: bool = True) -> list[ReviewItem]:
             if skip_done and fv.get("status") == "resolved" and fv.get("input_hash") == it.input_hash:
                 continue
             items.append(it)
-    return items
+    # Local changes settle before whole-page review. Stable sort preserves order
+    # within a paper/stage and never changes issue identities.
+    return sorted(items, key=lambda it: (it.paper, it.kind == KIND_PAGE, it.page if it.page is not None else -1))
 
 
 def get_entry(qc: dict, ref: tuple) -> dict:

@@ -138,6 +138,8 @@ def process_pdf(pdf_path: Path, output_root: Path, parser_name: str = "mineru",
     # 5) document.json（含全部块 + 是否进入 markdown）
     document_json = doc.to_dict()
     document_json["pdf_sha256"] = source_hash
+    import uuid
+    document_json["parse_id"] = uuid.uuid4().hex
     document_json["schema_version"] = 2
     kept_ids = {id(b) for b in kept}
     for b_dict, b_obj in zip(document_json["blocks"], doc.blocks):

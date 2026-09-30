@@ -39,8 +39,9 @@ class APIReviewer:
             self.cache[cache_key] = {"state":"in_flight", "uid":item.uid}
             self.save()
         image = base64.b64encode(Path(image_path).read_bytes()).decode('ascii')
-        task = {"uid":item.uid,"input_hash":item.input_hash,"kind":item.kind,"page":item.page,
-                "candidate_A_parser":item.candidate_a,"candidate_B":item.candidate_b,"context":item.extra}
+        task = {"uid":item.uid,"input_hash":item.input_hash,"kind":item.kind,"issue_type":item.issue_type,"page":item.page,
+                "candidate_A_parser":item.candidate_a,"candidate_B":item.candidate_b,
+                "context":{k:v for k,v in item.extra.items() if k != "target_content" or v != item.candidate_a}}
         mime = "image/jpeg" if Path(image_path).suffix.lower() in (".jpg", ".jpeg") else "image/png"
         payload={"model":self.model,"max_tokens":self.max_tokens,"messages":[
             {"role":"system","content":REVIEW_INSTRUCTIONS},

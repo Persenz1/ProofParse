@@ -21,7 +21,7 @@ def export_worklist(output_root: Path, path: Path, force: bool = False) -> int:
     """导出待裁决清单（agent 裁决官模式）：看图后填 verdicts 再 --from-json 导回。"""
     items = collect(output_root, skip_done=not force)
     rows = [{
-        "uid": it.uid, "kind": it.kind, "page": it.page,
+        "uid": it.uid, "kind": it.kind, "issue_type": it.issue_type, "page": it.page,
         "asset": str((output_root / it.paper / it.review_asset).resolve()) if it.review_asset else None,
         "document": str((output_root / it.paper / "document.json").resolve()),
         "source_pdf": str((output_root / it.paper / "source.pdf").resolve()),
@@ -33,7 +33,7 @@ def export_worklist(output_root: Path, path: Path, force: bool = False) -> int:
         "input_hash": it.input_hash, "block_id": it.block_id,
         "context": {k:v for k,v in it.extra.items() if k != "target_content" or v != it.candidate_a},
     } for it in items]
-    Path(path).write_text(json.dumps({"schema_version": 2, "instructions": REVIEW_INSTRUCTIONS, "items": rows}, ensure_ascii=False, indent=2),
+    Path(path).write_text(json.dumps({"schema_version": 3, "instructions": REVIEW_INSTRUCTIONS, "items": rows}, ensure_ascii=False, indent=2),
                           encoding="utf-8")
     return len(rows)
 

@@ -18,12 +18,7 @@ def export_paper(paper_dir: Path, destination: Path) -> Path:
         if block.type == 'equation':
             from .formula.qc import check_latex
             if check_latex(block.content):
-                from .pdf.render import render_crop
-                relative = f'images/{block.block_id}_formula.png'
-                if block.page is None or not block.bbox:
-                    raise ValueError(f'公式语法损坏且无法定位原图：{block.block_id}')
-                render_crop(paper_dir / doc.source_pdf, block.page, block.bbox, destination / relative)
-                block.extra['delivery_fallback'] = relative
+                raise ValueError(f'公式 LaTeX 尚未修复，不能用截图代替交付：{block.block_id}')
         if block.type not in ("figure", "table", "unknown"):
             continue
         asset = block.extra.get("asset")
