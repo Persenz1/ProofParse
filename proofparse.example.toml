@@ -15,9 +15,10 @@ device = "auto"
 python = 'D:\DevTools\Conda\envs\litparse\python.exe'
 batch_size = 16
 
-# [engines.pp_formulanet_plus_l]
-# python = '<env with paddlepaddle-gpu + mineru processors>'
-# model_dir = '<exported PP-FormulaNet_plus-L inference model>'
+# Paddle venv layered on litparse; never import torch in the same process (cuDNN clash).
+[engines.pp_formulanet_plus_l]
+python = 'D:\DevTools\venvs\paddle-formula\Scripts\python.exe'
+model_dir = 'D:\DevTools\Models\modelscope\models\PaddlePaddle--PP-FormulaNet_plus-L\snapshots\master'
 
 [escalation]
 mode = "agent"          # agent: export tasks for the controlling agent | api: call the API below | none
