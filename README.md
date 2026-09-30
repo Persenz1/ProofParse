@@ -5,7 +5,7 @@
 
 > 当前是重构中的测试前骨架（0.3.0.dev0）。候选模型尚未接入与实测，
 > 见 [开发计划](docs/DEVELOPMENT_PLAN.md)、[模型选型计划](docs/MODEL_SELECTION_PLAN_2026-09-30.md) 和 [架构说明](docs/ARCHITECTURE.md)。
-> `skill/` 下的安装引导仍是旧版流程，待模型组合确定后更新。
+> 重构前的测试报告见 [docs/history/](docs/history/)。
 
 ## 流程
 

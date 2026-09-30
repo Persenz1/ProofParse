@@ -1,5 +1,8 @@
 # 公式识别开发与测试问题报告（2026-09-30）
 
+> **历史记录**：本文描述的是 2026-09-30 重构之前的流水线。文中提到的 `proofparse/review/`、`proofparse/pdf/`、`scripts/` 等代码，在重构中已删除或迁移（原生约束检查现在位于 `proofparse/formula/` 和 `proofparse/preprocess/native.py`）；文中的 `output/...` 实验目录也已清理。结论仍可作为模型选择的参考，现行做法以 [开发计划](../DEVELOPMENT_PLAN.md) 和 [架构说明](../ARCHITECTURE.md) 为准。
+>
+> 22 条公式的裁图和 M/L 输出现在位于台式机的 `output/formula22-legacy/`；L 的权重和 Paddle 环境已移到公共目录，路径见 `proofparse.example.toml`。
 
 ## 目标和当前开发状态
 

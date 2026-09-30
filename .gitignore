@@ -22,10 +22,9 @@ build/
 dist/
 .venv/
 
-# ---- 终审工作文件 ----
-*.bak
-worklist*.json
-verdicts*.json
+# ---- 升级任务与答案（含论文内容）----
+tasks*.json
+answers*.json
 
 # ---- 密钥 ----
 .env

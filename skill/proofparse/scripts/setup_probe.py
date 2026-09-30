@@ -11,7 +11,7 @@ import sys
 
 def main():
     versions = {}
-    for name in ("proofparse", "mineru", "torch", "pypdfium2", "Pillow", "numpy"):
+    for name in ("proofparse", "pymupdf", "pypdfium2", "Pillow", "mineru", "torch", "paddlepaddle-gpu", "numpy"):
         try: versions[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError: versions[name] = None
     gpu = None
@@ -27,8 +27,10 @@ def main():
                 torch_probe_error = result.stderr.strip()[-500:]
         except (OSError, subprocess.TimeoutExpired) as exc:
             torch_probe_error = str(exc)
-    requested_device = os.environ.get("PROOFPARSE_MINERU_DEVICE", "auto").strip().lower()
-    selected_device = ("cuda" if cuda_available else "cpu") if requested_device == "auto" else requested_device
+    proofparse_config = next((str(p) for p in (os.environ.get("PROOFPARSE_CONFIG"), "proofparse.toml",
+                              Path(os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME")
+                                   or Path.home() / ".config") / "proofparse" / "config.toml")
+                              if p and Path(p).is_file()), None)
     exe = shutil.which("nvidia-smi")
     if exe:
         try:
@@ -47,7 +49,7 @@ def main():
         except (OSError,ValueError): pass
     print(json.dumps({"python":sys.executable,"python_version":platform.python_version(),
                       "os":platform.platform(),"packages":versions,"gpu":gpu,
-                      "requested_device":requested_device,"selected_device":selected_device,
+                      "proofparse_config":proofparse_config,
                       "torch_cuda_available":cuda_available,"torch_probe_error":torch_probe_error,
                       "conda":shutil.which("conda"),"configured_models":caches,
                       "huggingface_cache":os.environ.get("HF_HOME",str(Path.home()/'.cache/huggingface')),

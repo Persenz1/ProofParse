@@ -1,58 +1,58 @@
-# 安装与模型选择
+# 安装与配置
 
-先执行 SKILL.md 中的只读检测，并展示安装选项。以下命令是用户选择后的示例，不是自动执行清单。
+以下都是用户做出选择之后才执行的示例，不是自动执行清单。
 
-## 复用环境
+## 主程序
 
-在已有 Python 环境、仓库目录中：
+主进程只需要 PyMuPDF、pypdfium2、Pillow。在仓库目录、用户选定的 Python 环境中运行：
 
 ```text
 <PY> -m pip install -e .
 ```
 
-仅当还缺少解析器且用户同意下载：
+## 模型环境
 
-```text
-<PY> -m pip install "mineru[pipeline]==3.4.5" six
+每个模型都在自己配置的 Python 解释器里、以独立进程运行，主进程不加载任何模型代码。
+所以不同框架可以放在不同环境里。已知问题：同一个进程里同时加载 Paddle 和 PyTorch 的 CUDA 库，会发生 cuDNN 冲突，两者必须分开。
+
+当前已接入的模型：
+
+| 名称 | 用途 | 需要的环境 |
+|---|---|---|
+| mineru_pipeline | 版面、阅读顺序，以及第一路公式候选 | MinerU 3.4.5（`mineru[pipeline]`）和 PyTorch |
+| unimernet_small / pp_formulanet_plus_m | 公式识别 | 同上，权重由 MinerU 管理 |
+| pp_formulanet_plus_l | 公式识别 | Paddle 推理环境，另需导出的 L 权重目录 |
+
+其余候选模型在评测后才接入。模型权重应放在用户统一的模型缓存目录中，可复用的就不要再下载一份；缓存目录不属于每次任务的临时文件。
+
+## 配置文件
+
+查找顺序：环境变量 `PROOFPARSE_CONFIG` → 当前目录的 `proofparse.toml` → 用户目录（Windows 为 `%APPDATA%/proofparse/config.toml`，其他系统为 `~/.config/proofparse/config.toml`）。
+完整示例见仓库根目录的 `proofparse.example.toml`。要点如下：
+
+```toml
+[pipeline]
+layout = "mineru_pipeline"
+formula = ["mineru_pipeline", "pp_formulanet_plus_m"]   # 候选来源，按优先顺序
+
+[engines.mineru_pipeline]
+python = "<装有 MinerU 的环境的 python>"
+device = "auto"          # auto / cuda / cpu
+
+[escalation]
+mode = "agent"           # agent / api / none
+
+[escalation.api]
+base_url = ""            # OpenAI 兼容接口
+model = ""
+key_env = "PROOFPARSE_API_KEY"
+concurrency = 4
+max_requests = 200
 ```
 
-本次实际测试版本：Windows / Python 3.12.14 / MinerU 3.4.5 / pypdfium2 5.10.1。
-这是已测组合，不表示其他平台组合已验证。不同 MinerU 版本先核对输出字段再升级。
+没有配置文件时，所有模型都用当前解释器运行，升级方式默认为 agent。
+写完配置后运行 `proofparse engines`，把各模型实际使用的解释器展示给用户确认。
 
-## 新环境
+## 仅阅读已有结果
 
-建议独立 Python 3.12 环境。环境名和安装位置由用户选择，不修改或删除现有环境。
-GPU 用户先确认驱动兼容的 PyTorch 构建；CPU 用户选择 CPU 构建。
-设备默认 auto：以当前 Python 的 torch.cuda.is_available() 为准，有 CUDA 则用 cuda，否则用 cpu。
-可用 PROOFPARSE_MINERU_DEVICE=cpu/cuda 手动指定，不自动覆盖显式选择。
-安装完成后再次运行检测脚本，向用户展示解释器、实际选择设备和模型缓存位置。
-不要把开发机 CUDA 版本当作所有用户默认值。
-
-MinerU 会使用版面、OCR、公式、表格等模型。首次运行可能自动下载权重。
-第二公式识别使用 PP-FormulaNet+；需明确授权下载和缓存位置。
-MINERU_FORMULA_CH_SUPPORT 会影响第一路公式模型选择，不能默认双路必然是不同模型。
-
-模型来源、缓存目录和下载量应在安装前展示；未知下载量明确写待确认。
-已有权重尽量复用，不默认再下载一份。缓存目录不是每次任务结束应删除的临时目录。
-
-## 仅阅读/复查
-
-安装核心包即可，不安装 MinerU、PyTorch 或第二公式模型。需要已有 paper 资料包。
-从源代码目录也可直接用 Python -m 命令运行，但渲染需要 pypdfium2 和 Pillow。
-纯文本宿主可导出任务；视觉校验需要宿主本身支持图片或用户授权独立 API。
-
-## 环境变量
-
-| 变量 | 用途 |
-|---|---|
-| PROOFPARSE_PYTHON | 选择解析器所在 Python；CLI 本身也应由该解释器启动 |
-| MINERU_EXE | 明确指定 MinerU CLI 路径 |
-| PROOFPARSE_MINERU_DEVICE | auto（默认）/ cuda / cpu |
-| PROOFPARSE_FORMULA_MODEL | pp_formulanet_plus_m / unimernet_small |
-| PROOFPARSE_WORK_DIR | 本次临时模型输出目录；未设置时原始缓存留在论文输出目录 |
-| MINERU_TOOLS_CONFIG_JSON | 已有 MinerU 配置路径 |
-| HF_HOME / MODELSCOPE_CACHE | 模型缓存根；需在运行前选择并核对上游配置 |
-| PROOFPARSE_REVIEW_API_KEY | 可选 API 密钥 |
-
---no-formula-check 可以跳过第二公式模型，但状态会明确保留 not_run，不能宣称完整检查已通过。
-source.pdf、assets 和 review_assets 都是资料包功能所需文件；清理临时目录前确认交付不引用其中路径。
+只装主程序即可。`proofparse status`、`tasks export/import`、`export` 都不需要模型环境。

@@ -1,5 +1,7 @@
 # Zotero 样本测试结果（2026-09-15）
 
+> **历史记录**：本文描述的是 2026-09-30 重构之前的流水线。文中提到的 `proofparse/review/`、`proofparse/pdf/`、`scripts/` 等代码，在重构中已删除或迁移（原生约束检查现在位于 `proofparse/formula/` 和 `proofparse/preprocess/native.py`）；文中的 `output/...` 实验目录也已清理。结论仍可作为模型选择的参考，现行做法以 [开发计划](../DEVELOPMENT_PLAN.md) 和 [架构说明](../ARCHITECTURE.md) 为准。
+
 本轮完成代码修正、本地解析、针对性回归，以及少量真实视觉裁决。没有宣称四篇论文已经逐字校验完毕。
 
 ## 测试来源与范围

@@ -1,5 +1,9 @@
 # 公式确定性验收器实现与实测
 
+> **历史记录**：本文描述的是 2026-09-30 重构之前的流水线。文中提到的 `proofparse/review/`、`proofparse/pdf/`、`scripts/` 等代码，在重构中已删除或迁移（原生约束检查现在位于 `proofparse/formula/` 和 `proofparse/preprocess/native.py`）；文中的 `output/...` 实验目录也已清理。结论仍可作为模型选择的参考，现行做法以 [开发计划](../DEVELOPMENT_PLAN.md) 和 [架构说明](../ARCHITECTURE.md) 为准。
+>
+> 文中的 22 条金标准草稿（agent 起草，从未确认）已随旧 output 一起清理；今后的公式金标准由 `proofparse gold build` 从 arXiv 源码生成。
+
 ## 评测口径
 
 金标准复核由代理完成，不计为人工确认。目标是忠实转录 PDF 的目标数学片段，裁图外编号另行关联，不计入主体正确性。t20 源文确实缺上标右括号，保留原文；原任务书的“L 漏括号”假设不成立。
