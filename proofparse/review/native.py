@@ -104,6 +104,8 @@ def attach_native(items, paper_dir: Path, document: dict) -> None:
                     'numbers': value['numbers'],
                     'unsupported_commands': value['unsupported_commands'],
                     'count_check': value['count_check'],
+                    'script_check': value['script_check'],
+                    'matrix_check': value['matrix_check'],
                     'alignment_counts': {state: sum(a['status'] == state for a in value['alignment'])
                                          for state in ('unique_symbol', 'ambiguous', 'not_in_text_layer')}
                 } for name, value in constraints['candidates'].items()},

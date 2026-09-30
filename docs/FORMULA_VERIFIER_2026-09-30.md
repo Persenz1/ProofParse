@@ -25,4 +25,29 @@
 
 `proofparse/pdf/fontnames.py` 提供可选 TTF/OpenType/CFF GID→字形名路径，`pyproject.toml` 增加 fontnames extra。用 [fontTools 官方接口](https://fonttools.readthedocs.io/en/latest/ttLib/ttFont.html) 与 CFF charset；未安装、不嵌入或字形名无语义时明确降级。现有解释器没有 fontTools，未安装；真实字体名恢复路径未实跑，不宣称已验证恢复效果。`tests/test_font_tables.py` 覆盖全部字体族、编码槽、GID 不代替字符码及确认优先级。61 项测试中 60 通过、1 跳过、0 失败；跳过项是 fontTools 的嵌入 CFF 测试。
 
-三篇真实 PDF 的全页字符统计位于 `output/verifier-eval-20260930/stage2-fonts.json`：均没有白名单字体，font_table 映射各 0、与已有确认映射一致/冲突各 0。因此 t05/t21 不能由白名单表自动解决；已有文档内 K/B 视觉映射可复用，但其效果不能记为新字体表的自动能力。Adv/STIX/Bembo/TeX_CM_Maths_* 名称不做无来源扩张。没有修改用户的映射文件。阶段 3～5 待完成。
+三篇真实 PDF 的全页字符统计位于 `output/verifier-eval-20260930/stage2-fonts.json`：均没有白名单字体，font_table 映射各 0、与已有确认映射一致/冲突各 0。因此 t05/t21 不能由白名单表自动解决；已有文档内 K/B 视觉映射可复用，但其效果不能记为新字体表的自动能力。Adv/STIX/Bembo/TeX_CM_Maths_* 名称不做无来源扩张。没有修改用户的映射文件。
+
+## 阶段 3：几何结构
+
+`proofparse/formula/geometry.py` 增加唯一符号的上下标路径对照和单个非嵌套矩阵的主基线行数核对；阈值固定为字号比 <0.85、基线偏移 >0.15×主体字号、聚类容差 0.3×字号。candidate_atoms 保留完整嵌套路径，分式/binom 内符号不参加上下标对照；矩阵含分式、多个/嵌套环境或边框不明确时明确跳过。末尾空行分隔符不计新行，以免普通 TeX 末尾换行产生误报。
+
+真实 PDF 的 CMEX 文本 bbox 可能不覆盖实际伸长括号，且同字体还有重音/普通函数括号。实现仅选括号字形，按伸长跨度与配对区分边框，保留与目标相交但中心在外的扩展字形，并用目标纵向范围核对主基线。旋转写入方向不水平时明确 unreliable。`proofparse/pdf/native.py` 增加显示页坐标的书写方向，review 摘要包含 script_check/matrix_check，均进入哈希。
+
+`tests/test_formula_geometry.py` 增加 6 项行为测试，包括嵌套角色、严格阈值、重复歧义、分式跳过、2×2 缺行及脚标不增行。最终 67 项中 66 通过、1 跳过、0 失败。开发中失败已修复，代表输出为：
+
+```text
+File "proofparse/formula/native.py", line 307
+    else:
+SyntaxError: invalid syntax
+Ran 45 tests
+FAILED (errors=17)
+
+FAIL: test_missing_number_is_separate_from_body_font_and_prose
+AssertionError: Lists differ: ['script_constraint', 'number_constraint', ...]
+Ran 67 tests
+FAILED (failures=1, skipped=1)
+```
+
+首个失败来自重复接入片段，已移除；第二个失败来自没有字体元数据的合成字形参与几何，已将这种证据明确降级。未通过修改旧测试断言掩盖失败。
+
+88 路实测位于 `output/verifier-eval-20260930/stage3.json`。t11 B/M/L 的唯一符号 2 存在下标路径差异，得到 script_constraint。t13 A/B/M 主要由计数拦截；L 不按旧预设认定归属错误。t16 B/M 完全没有矩阵环境，不能用“仅一个矩阵环境”规则强猜行数，仍由计数抓到缺失 0/1；A/L 的 0→θ 仍由计数发现。完整误报在阶段5逐候选列出，几何路径只提供局部层级证据，不证明重复符号与具体主体的绑定。

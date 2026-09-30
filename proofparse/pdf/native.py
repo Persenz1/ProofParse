@@ -32,6 +32,8 @@ def page_characters(page) -> list[dict]:
                 "font_xref": next(iter(xrefs)) if len(xrefs) == 1 else None,
                 "size_pt": span["size"], "origin_pt": list(point),
                 "bbox_pt": list(rect), "direction_unrotated": list(span["dir"]),
+                "direction_pt": [span['dir'][0] * rotation.a + span['dir'][1] * rotation.c,
+                                 span['dir'][0] * rotation.b + span['dir'][1] * rotation.d],
                 "render_type": span["type"], "opacity": span["opacity"],
                 "suspicious_encoding": char == "\ufffd" or
                     unicodedata.category(char) in ("Cc", "Co", "Cs"),

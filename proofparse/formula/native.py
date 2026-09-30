@@ -54,7 +54,7 @@ def candidate_atoms(latex: str) -> dict:
     ts = [t for t in tokens(body) if not t.value.isspace()]
     atoms, unsupported = [], []
 
-    def parse(i, styles=(), role='math', one=False):
+    def parse(i, styles=(), role='math', one=False, fraction=False):
         while i < len(ts):
             t = ts[i]
             i += 1
@@ -62,15 +62,20 @@ def candidate_atoms(latex: str) -> dict:
             if value == '}':
                 return i
             if value == '{':
-                i = parse(i, styles, role)
+                i = parse(i, styles, role, fraction=fraction)
             elif value in ('_', '^'):
-                i = parse(i, styles, 'subscript' if value == '_' else 'superscript', True)
+                script = 'subscript' if value == '_' else 'superscript'
+                path = script if role in ('math', 'text') else role + '>' + script
+                i = parse(i, styles, path, True, fraction)
             elif value.startswith('\\'):
                 command = value[1:]
                 if command in FONTS or command in TEXT:
                     style = FONTS.get(command)
                     i = parse(i, (*styles, style) if style else styles,
-                              'text' if command in TEXT else role, True)
+                              'text' if command in TEXT else role, True, fraction)
+                elif command in ('frac', 'dfrac', 'tfrac', 'binom', 'dbinom', 'tbinom'):
+                    i = parse(i, styles, role, True, True)
+                    i = parse(i, styles, role, True, True)
                 elif command in ('begin', 'end'):
                     if i < len(ts) and ts[i].value == '{':
                         i += 1
@@ -89,19 +94,19 @@ def candidate_atoms(latex: str) -> dict:
                     styles = (*styles, DECLARATIONS[command])
                 elif command in ('{', '}', '|'):
                     atoms.append({'text': command, 'styles': list(styles),
-                                  'role': role, 'body_offset': [t.start, t.end]})
+                                  'role': role, 'in_fraction': fraction, 'body_offset': [t.start, t.end]})
                 elif command in SYMBOLS:
                     atoms.append({'text': SYMBOLS[command], 'styles': list(styles),
-                                  'role': role, 'body_offset': [t.start, t.end]})
+                                  'role': role, 'in_fraction': fraction, 'body_offset': [t.start, t.end]})
                 elif command in OPERATORS:
                     atoms.extend({'text': char, 'styles': [*styles, 'roman'],
-                                  'role': role, 'body_offset': [t.start, t.end]}
+                                  'role': role, 'in_fraction': fraction, 'body_offset': [t.start, t.end]}
                                  for char in command)
                 elif command not in STRUCTURE and command not in (',', ';', ':', '!', ' ', '\\'):
                     unsupported.append(value)
             elif value not in '&$':
                 atoms.append({'text': value, 'styles': list(styles), 'role': role,
-                              'body_offset': [t.start, t.end]})
+                              'in_fraction': fraction, 'body_offset': [t.start, t.end]})
             if one:
                 return i
         return i
@@ -274,7 +279,15 @@ def number_candidates(characters: list[dict], target: list[float],
 
 
 def analyze(evidence: dict, a: str, b: str, *, numbers: dict | None = None) -> dict:
+    from .geometry import script_constraint, matrix_constraint
     chars = [c for c in evidence['characters'] if c['in_target'] and visible(c)]
+    geometry_chars = list(chars)
+    target = evidence.get('target_bbox_pt')
+    if target:
+        geometry_chars.extend(c for c in evidence['characters'] if not c['in_target'] and visible(c)
+                              and extension_glyph(c) and c['bbox_pt'][2] >= target[0]
+                              and c['bbox_pt'][0] <= target[2] and c['bbox_pt'][3] >= target[1]
+                              and c['bbox_pt'][1] <= target[3])
     counts = Counter(symbol(c) for c in chars)
     result = {'number_association': numbers or {'status': 'not_applicable', 'candidates': []},
               'candidates': {}, 'findings': []}
@@ -288,6 +301,12 @@ def analyze(evidence: dict, a: str, b: str, *, numbers: dict | None = None) -> d
             'status': 'skipped', 'skipped': {}, 'reason': 'Candidate is empty'}
         if text:
             result['findings'].extend(f | {'candidate': name} for f in count_findings)
+            parsed['script_check'], script_findings = script_constraint(chars, parsed)
+            parsed['matrix_check'], matrix_findings = matrix_constraint(geometry_chars, text, target)
+            result['findings'].extend(f | {'candidate': name} for f in script_findings + matrix_findings)
+        else:
+            for check in ('script_check', 'matrix_check'):
+                parsed[check] = {'status': 'skipped', 'reason': 'Candidate is empty'}
         atoms = parsed['atoms']
         candidate_counts = Counter(atom['text'] for atom in atoms)
         alignment = []
