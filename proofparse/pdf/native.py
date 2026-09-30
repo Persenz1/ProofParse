@@ -6,6 +6,7 @@ in PDF points (including page rotation). Glyph IDs are local to the PDF font.
 from __future__ import annotations
 
 import unicodedata
+from collections import Counter
 import re
 
 
@@ -65,9 +66,11 @@ def region_evidence(characters: list[dict], page_size: tuple[float, float],
         cx, cy = (x0+x1)/2, (y0+y1)/2
         selected.append(char | {"in_target": target[0] <= cx <= target[2]
                                and target[1] <= cy <= target[3]})
+    font_counts = Counter(c['font'] for c in characters if c['render_type'] != 3 and c['opacity'] > 0)
+    body_font = font_counts.most_common(1)[0][0] if font_counts else None
     return {
         "coordinate_system": "displayed_page_top_left_pt",
-        "page_size_pt": [width, height], "region_bbox_pt": region,
+        "body_font": body_font, "page_size_pt": [width, height], "region_bbox_pt": region,
         "target_bbox_pt": target, "characters": selected,
         "fonts": sorted({c["font"] for c in selected}),
         "n_suspicious_encoding": sum(c["suspicious_encoding"] for c in selected),

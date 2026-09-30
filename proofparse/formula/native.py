@@ -343,6 +343,9 @@ def analyze(evidence: dict, a: str, b: str, *, numbers: dict | None = None) -> d
                 result['findings'].append({'candidate': name, 'type': 'number_constraint',
                     'source_number': expected, 'candidate_numbers': parsed['numbers'],
                     'association': 'layout_hint'})
+    from .boundary import boundary_suggestions
+    result['boundary_check'], suggestions = boundary_suggestions(evidence)
+    result['findings'].extend(suggestions)
     # An ordinary prose citation caught in a math bbox is useful boundary evidence.
     raw = ''.join(symbol(c) for c in chars)
     if re.search(r'(?:Fig(?:ure)?\.|Table)\s*\d', raw):

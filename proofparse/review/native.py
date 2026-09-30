@@ -99,6 +99,7 @@ def attach_native(items, paper_dir: Path, document: dict) -> None:
             it.extra['native_constraints'] = {
                 'status': constraints['status'],
                 'number_association': constraints['number_association'],
+                'boundary_check': constraints['boundary_check'],
                 'findings': constraints['findings'],
                 'candidates': {name: {
                     'numbers': value['numbers'],
