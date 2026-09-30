@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from ..pdf.native import page_characters, region_evidence
-from ..formula.native import analyze, apply_glyph_map, number_candidates
+from ..formula.native import analyze, apply_glyph_map, number_candidates, requires_review
 
 
 def pdf_digest(path):
@@ -102,6 +102,7 @@ def attach_native(items, paper_dir: Path, document: dict) -> None:
                 'candidates': {name: {
                     'numbers': value['numbers'],
                     'unsupported_commands': value['unsupported_commands'],
+                    'count_check': value['count_check'],
                     'alignment_counts': {state: sum(a['status'] == state for a in value['alignment'])
                                          for state in ('unique_symbol', 'ambiguous', 'not_in_text_layer')}
                 } for name, value in constraints['candidates'].items()},
@@ -109,7 +110,7 @@ def attach_native(items, paper_dir: Path, document: dict) -> None:
                 'details_key': it.issue_id,
                 'evidence_hash': hashlib.sha256(raw.encode('utf-8')).hexdigest(),
             }
-            if constraints['findings'] and not it.review_asset:
+            if requires_review(constraints) and not it.review_asset:
                 from ..pdf.render import render_crop
                 # New native-only issues may previously have had no OCR crop.
                 region = list(evidence['target_bbox_pt'])

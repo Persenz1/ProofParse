@@ -147,7 +147,8 @@ def collect(output_root: Path, skip_done: bool = True) -> list[ReviewItem]:
                     entry["review_asset"] = it.review_asset
                     changed = True
                 native = it.extra.get("native_constraints", {})
-                required = bool(native.get("findings")) if "findings" in native else entry.get("native_review_required", False)
+                from ..formula.native import requires_review
+                required = requires_review(native) if "findings" in native else entry.get("native_review_required", False)
                 if entry.get("native_review_required", False) != required:
                     entry["native_review_required"] = required
                     changed = True

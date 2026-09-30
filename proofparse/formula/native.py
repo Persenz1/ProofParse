@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import Counter
 import re
+import unicodedata
 
 from .syntax import split_equation, tokens
 
@@ -18,6 +19,13 @@ SYMBOLS = dict(zip(
 SYMBOLS.update({'cdot': '⋅', 'times': '×', 'leq': '≤', 'le': '≤', 'geq': '≥',
                 'ge': '≥', 'neq': '≠', 'ne': '≠', 'infty': '∞', 'partial': '∂',
                 'nabla': '∇', 'ell': 'ℓ', 'sum': '∑', 'prod': '∏', 'int': '∫'})
+SYMBOLS['prime'] = '′'
+SYMBOLS.update({'in': '∈', 'mid': '|', 'nleq': '≰', 'langle': '⟨', 'rangle': '⟩',
+                'lbrace': '{', 'rbrace': '}', 'vert': '|', 'Vert': '‖'})
+SYMBOLS.update({'var' + name: value for name, value in list(SYMBOLS.items())
+                if name[0].isupper()})
+OPERATORS = {'sin', 'cos', 'tan', 'cot', 'arcsin', 'arccos', 'arctan', 'sinh',
+             'cosh', 'tanh', 'log', 'ln', 'exp', 'lim', 'min', 'max', 'det', 'gcd', 'Pr'}
 FONTS = {'mathcal': 'calligraphic', 'mathscr': 'script', 'mathbb': 'double_struck',
          'mathfrak': 'fraktur', 'mathbf': 'bold', 'boldsymbol': 'bold', 'pmb': 'bold',
          'bm': 'bold', 'mathrm': 'roman', 'mathit': 'italic', 'mathsf': 'sans',
@@ -29,6 +37,9 @@ STRUCTURE = {'frac', 'dfrac', 'tfrac', 'sqrt', 'left', 'right', 'big', 'Big', 'b
              'tilde', 'widetilde', 'vec', 'dot', 'ddot', 'underline', 'overset', 'underset',
              'stackrel', 'quad', 'qquad', 'displaystyle', 'textstyle', 'scriptstyle',
              'scriptscriptstyle', 'scriptsize', 'limits', 'nolimits'}
+STRUCTURE.update({'binom', 'dbinom', 'tbinom', 'atop'})
+STRUCTURE.update(size + side for size in ('big', 'Big', 'bigg', 'Bigg') for side in ('l', 'r', 'm'))
+DECLARATIONS = {'bf': 'bold', 'cal': 'calligraphic', 'rm': 'roman', 'it': 'italic'}
 
 
 def candidate_atoms(latex: str) -> dict:
@@ -61,11 +72,29 @@ def candidate_atoms(latex: str) -> dict:
                 elif command in ('begin', 'end'):
                     if i < len(ts) and ts[i].value == '{':
                         i += 1
+                        start = i
                         while i < len(ts) and ts[i].value != '}': i += 1
+                        environment = ''.join(t.value for t in ts[start:i])
                         i += i < len(ts)
+                        if command == 'begin' and environment in ('array', 'alignedat') and i < len(ts) and ts[i].value == '{':
+                            nesting = 1
+                            i += 1
+                            while i < len(ts) and nesting:
+                                if ts[i].value == '{': nesting += 1
+                                elif ts[i].value == '}': nesting -= 1
+                                i += 1
+                elif command in DECLARATIONS:
+                    styles = (*styles, DECLARATIONS[command])
+                elif command in ('{', '}', '|'):
+                    atoms.append({'text': command, 'styles': list(styles),
+                                  'role': role, 'body_offset': [t.start, t.end]})
                 elif command in SYMBOLS:
                     atoms.append({'text': SYMBOLS[command], 'styles': list(styles),
                                   'role': role, 'body_offset': [t.start, t.end]})
+                elif command in OPERATORS:
+                    atoms.extend({'text': char, 'styles': [*styles, 'roman'],
+                                  'role': role, 'body_offset': [t.start, t.end]}
+                                 for char in command)
                 elif command not in STRUCTURE and command not in (',', ';', ':', '!', ' ', '\\'):
                     unsupported.append(value)
             elif value not in '&$':
@@ -100,6 +129,82 @@ def visible(c):
 
 def symbol(c):
     return c.get('mapped_text', c['text'])
+
+
+def normalized_symbol(text):
+    if text == '−':
+        return '-'
+    if text in ("'", '′'):
+        return '′'
+    return unicodedata.normalize('NFKC', text)
+
+
+def extension_glyph(char):
+    font = re.sub(r'^[A-Z]{6}\+', '', char.get('font', '')).upper()
+    family = re.sub(r'\d+$', '', font)
+    return (family.endswith(('CMEX', 'EX')) or family in
+            {'TEX_CM_MATHS_EXTENSION', 'MTEX', 'MATHEXTRA', 'LMEX', 'MATHPEX'})
+
+
+COMPARABLE = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789()[],;=+-′')
+COMPARABLE.update(value for value in SYMBOLS.values() if 'GREEK' in unicodedata.name(value, ''))
+DELIMITERS = set('()[]')
+ACCENTS = set('ˆ˜¯˙^~`')
+
+
+def count_constraint(chars, parsed, latex, numbers):
+    """Compare glyph multiplicities only when the remaining alphabet is reliable."""
+    skipped, source, excluded = {}, [], set()
+    number_indices = {tuple(index) for label in numbers.get('candidates', [])
+                      for index in label.get('source_indices', [])}
+    if numbers.get('status') != 'associated_by_layout':
+        number_indices.clear()
+    delimiters = (any(extension_glyph(c) for c in chars) or
+                  bool(re.search(r'\\(?:left|right|[bB]ig(?:g)?[lrm]?)(?![a-zA-Z])', latex)))
+    if delimiters:
+        excluded.update(DELIMITERS)
+        skipped['delimiters'] = True
+    unreliable = False
+    for char in chars:
+        raw = symbol(char)
+        s = normalized_symbol(raw)
+        if tuple(char['source_index']) in number_indices:
+            skipped['equation_number'] = skipped.get('equation_number', 0) + 1
+        elif extension_glyph(char):
+            skipped['extension_glyphs'] = skipped.get('extension_glyphs', 0) + 1
+        elif raw in ACCENTS or (len(raw) == 1 and unicodedata.category(raw) in ('Sk', 'Mn')):
+            skipped['accents'] = skipped.get('accents', 0) + 1
+        elif not char.get('mapped_text') and char.get('suspicious_encoding'):
+            skipped['suspicious_encoding'] = skipped.get('suspicious_encoding', 0) + 1
+            unreliable = True
+        elif not char.get('mapped_text') and char.get('font', '').lower() in ('', 'unknown'):
+            skipped['unknown_font'] = skipped.get('unknown_font', 0) + 1
+            unreliable = True
+        elif s in COMPARABLE:
+            source.append((s, char['source_index']))
+    if parsed['unsupported_commands']:
+        skipped['unsupported_commands'] = parsed['unsupported_commands']
+        return {'status': 'skipped', 'skipped': skipped,
+                'reason': 'Unknown macro expansion may affect any symbol count'}, []
+    if unreliable or not source:
+        return {'status': 'unreliable', 'skipped': skipped,
+                'reason': 'Unmapped encoding or no reliably comparable glyphs'}, []
+    source_counts = Counter(s for s, index in source if s not in excluded)
+    candidate_counts = Counter(normalized_symbol(atom['text']) for atom in parsed['atoms']
+                               if normalized_symbol(atom['text']) in COMPARABLE - excluded)
+    findings = [{'type': 'count_constraint', 'symbol': s,
+                 'source_count': source_counts[s], 'candidate_count': candidate_counts[s],
+                 'source_indices': [index for char, index in source if char == s]}
+                for s in sorted(source_counts.keys() | candidate_counts.keys())
+                if source_counts[s] != candidate_counts[s]]
+    return {'status': 'partial' if skipped else 'checked', 'skipped': skipped}, findings
+
+
+def requires_review(constraints):
+    return bool(constraints.get('findings')) or any(
+        check.get('status') in ('unreliable', 'skipped') and check.get('reason') != 'Candidate is empty'
+        for candidate in constraints.get('candidates', {}).values()
+        for key, check in candidate.items() if key.endswith('_check'))
 
 
 def number_candidates(characters: list[dict], target: list[float],
@@ -160,6 +265,11 @@ def analyze(evidence: dict, a: str, b: str, *, numbers: dict | None = None) -> d
               'candidates': {}, 'findings': []}
     for name, text in (('parser', a), ('formula_ocr', b)):
         parsed = candidate_atoms(text)
+        count_check, count_findings = count_constraint(chars, parsed, text, result['number_association'])
+        parsed['count_check'] = count_check if text else {
+            'status': 'skipped', 'skipped': {}, 'reason': 'Candidate is empty'}
+        if text:
+            result['findings'].extend(f | {'candidate': name} for f in count_findings)
         atoms = parsed['atoms']
         candidate_counts = Counter(atom['text'] for atom in atoms)
         alignment = []
