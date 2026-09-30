@@ -42,4 +42,8 @@ review_summary.json 的 status：auto_pass（仅无待检查内容）、reviewed
 导入退出码 1 代表仍有未解决项，0 代表全部检查通过；2 为参数/文件配置错误。
 API 缓存保存成功响应、usage 和不确定请求状态。调用数量上限不是严格费用封顶。
 
+原生约束来源等级：文档内视觉确认映射（`confirmed`，具体来源在 mapping_detail）> 白名单 TeX 字体表（`font_table`）> 可选嵌入字体字形名（`glyph_name`）> 原始 Unicode。确认映射优先，字体表冲突仍记录为 finding；均不自动确认或改写 LaTeX。font_table 仅使用明确编码槽或已解码 Unicode，不把 glyph_id 当编码槽。代理复核须标注代理来源，不冒充人工确认。
+
+count_check 的 checked/partial 只表示支持符号的核对范围；unreliable/skipped 均明确给出原因并保留待审。新增字形映射、计数及后续几何/边界证据通过 native_constraints 参与 evidence_hash/input_hash。此次升级后旧清单需重新导出，旧裁决不能直接复用。
+
 visual custom 可用 caption 修正完整图注/表题；仅经看图确认的出版商标识可用 ignore_as: publisher_mark 从交付中排除，不能用它隐藏识别失败的科研内容。

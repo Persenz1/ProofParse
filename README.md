@@ -67,13 +67,15 @@ python -m proofparse.read output/papers/paper_name --page 0 --crop 50 100 950 40
 
 重复符号保留歧义，编号按位置关联；这些约束不会自动确认或改写 LaTeX。两路 OCR 一致但原生证据存在冲突时，仍生成待审任务及必要裁图。新增证据参与 `input_hash`，受影响的旧裁决需要刷新。
 
-字体名不自动解释为花体。宿主看过原图并确认具体字形后，可登记文档内映射：
+仅对白名单 TeX 字体族 CMSY/CMBSY、MSBM、EUSM/EUSB、RSFS、EUFM/EUFB、CMMI/CMMIB、CMBX 使用权威编码表及已解码字符推断含义或字体，标记 `mapping_source: font_table`。不从任意字体名猜测花体，也不把 PDF 子集 `glyph_id` 当成字符码。优先级为已视觉确认的文档内映射 > 白名单 font_table > 可选嵌入字体字形名 > 原始 Unicode；冲突保留并进入待审。字体表推断只产生约束，不自动改写公式。宿主看过原图并确认具体字形后，可登记文档内映射：
 
 ```text
 python -m proofparse.review.native output/papers/paper_name --confirm-glyph PAGE SPAN CHAR --text K --styles calligraphic
 ```
 
 `PAGE` 为从 0 起的页码，`SPAN CHAR` 是字符证据的 `source_index`。字符纠码可省略 `--styles`。映射保存为 `native_glyphs.json`，绑定源 PDF、字体资源和字形；不会跨论文套用，也不替换原始证据中的字符。登记后重新导出工作清单。原生证据无法独立恢复所有分式、矩阵或损坏编码，完整公式仍按现有视觉复查与修正协议处理。
+
+可选 `fontnames` extra 用 fontTools 按嵌入 TTF/OpenType/CFF 的 GID 读取乱码字形名；缺少依赖、未嵌入或字形名无含义时明确降级。计数检查在未知宏、乱码、缺失字体证据时报告 `skipped`/`unreliable`，并保持待审；“无 finding”不表示转录正确。此次证据语义升级后必须重新导出旧工作清单，旧裁决不能直接复用。
 
 ### 可选独立 API
 

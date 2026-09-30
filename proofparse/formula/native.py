@@ -1,6 +1,6 @@
 """Native glyph constraints for review, not a general PDF-to-LaTeX engine.
 
-Only visually confirmed, PDF-bound glyph mappings override Unicode or style.
+Confirmed PDF-bound mappings outrank explicit TeX tables and glyph names.
 Symbol alignments and number associations are hints; they never resolve review.
 """
 from __future__ import annotations
@@ -10,6 +10,7 @@ import re
 import unicodedata
 
 from .syntax import split_equation, tokens
+from .fonttables import font_table
 
 SYMBOLS = dict(zip(
     ('alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta iota kappa '
@@ -20,6 +21,7 @@ SYMBOLS.update({'cdot': '⋅', 'times': '×', 'leq': '≤', 'le': '≤', 'geq': 
                 'ge': '≥', 'neq': '≠', 'ne': '≠', 'infty': '∞', 'partial': '∂',
                 'nabla': '∇', 'ell': 'ℓ', 'sum': '∑', 'prod': '∏', 'int': '∫'})
 SYMBOLS['prime'] = '′'
+SYMBOLS.update({'epsilon': 'ϵ', 'varepsilon': 'ε', 'phi': 'ϕ', 'varphi': 'φ'})
 SYMBOLS.update({'in': '∈', 'mid': '|', 'nleq': '≰', 'langle': '⟨', 'rangle': '⟩',
                 'lbrace': '{', 'rbrace': '}', 'vert': '|', 'Vert': '‖'})
 SYMBOLS.update({'var' + name: value for name, value in list(SYMBOLS.items())
@@ -114,11 +116,22 @@ def apply_glyph_map(characters: list[dict], mappings: list[dict]) -> list[dict]:
     result = []
     for c in characters:
         c = dict(c)
+        table = font_table(c)
+        if table:
+            c.update(table)
+        elif c.get('glyph_name_text'):
+            c.update(mapped_text=c['glyph_name_text'], mapped_styles=[],
+                     mapping_source='glyph_name', mapping_detail={'glyph_name': c['glyph_name']})
         mapping = lookup.get((c.get('font_xref'), c['glyph_id']))
         if mapping:
+            if table and (table['mapped_text'] != mapping['text'] or
+                          set(table['mapped_styles']) != set(mapping.get('styles', []))):
+                c['mapping_conflicts'] = [{'source': 'font_table', 'text': table['mapped_text'],
+                                          'styles': table['mapped_styles']}]
             c['mapped_text'] = mapping['text']
             c['mapped_styles'] = mapping.get('styles', [])
-            c['mapping_source'] = mapping['source']
+            c['mapping_source'] = 'confirmed'
+            c['mapping_detail'] = mapping['source']
         result.append(c)
     return result
 
@@ -136,7 +149,9 @@ def normalized_symbol(text):
         return '-'
     if text in ("'", '′'):
         return '′'
-    return unicodedata.normalize('NFKC', text)
+    if len(text) == 1 and (0x1D400 <= ord(text) <= 0x1D7FF or 0xFF00 <= ord(text) <= 0xFFEF):
+        return unicodedata.normalize('NFKC', text)
+    return text
 
 
 def extension_glyph(char):
@@ -263,6 +278,9 @@ def analyze(evidence: dict, a: str, b: str, *, numbers: dict | None = None) -> d
     counts = Counter(symbol(c) for c in chars)
     result = {'number_association': numbers or {'status': 'not_applicable', 'candidates': []},
               'candidates': {}, 'findings': []}
+    result['findings'].extend({'type': 'glyph_mapping_conflict', 'source_index': c['source_index'],
+                               'effective_text': symbol(c), 'conflicts': c['mapping_conflicts']}
+                              for c in chars if c.get('mapping_conflicts'))
     for name, text in (('parser', a), ('formula_ocr', b)):
         parsed = candidate_atoms(text)
         count_check, count_findings = count_constraint(chars, parsed, text, result['number_association'])

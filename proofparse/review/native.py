@@ -89,7 +89,8 @@ def attach_native(items, paper_dir: Path, document: dict) -> None:
             constraints['glyphs'] = [
                 {k: c[k] for k in ('source_index', 'text', 'glyph_id', 'font_xref', 'size_pt',
                                    'origin_pt', 'bbox_pt', 'font_flags', 'suspicious_encoding',
-                                   'mapped_text', 'mapped_styles', 'mapping_source') if k in c}
+                                   'mapped_text', 'mapped_styles', 'mapping_source', 'mapping_detail',
+                                   'mapping_conflicts', 'glyph_name', 'glyph_name_check') if k in c}
                 for c in evidence['characters'] if c['in_target']]
             details[it.issue_id] = constraints
             raw = json.dumps(constraints, ensure_ascii=False, sort_keys=True)

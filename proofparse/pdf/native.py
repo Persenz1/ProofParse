@@ -36,6 +36,8 @@ def page_characters(page) -> list[dict]:
                 "suspicious_encoding": char == "\ufffd" or
                     unicodedata.category(char) in ("Cc", "Co", "Cs"),
             })
+    from .fontnames import attach_glyph_names
+    attach_glyph_names(page.parent, result)
     return result
 
 

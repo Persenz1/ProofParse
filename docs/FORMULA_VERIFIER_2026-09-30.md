@@ -15,4 +15,14 @@
 
 88 路同裁图实测保存在本机 `output/verifier-eval-20260930/stage1.json`：t11 B/M 的额外 ξ 被计数抓到，L 的额外 0 也被抓到；t16 B/M 的缺下行表现为缺 0/1，A/L 的 0→θ 被抓到；t13 A/B/M 有符号缺失，L 无计数 finding。t10 A 的粗体 F 仍由原 font_constraint 抓到。t05 四路均有未映射乱码，计数 unreliable。t20 跳过所有定界符，没有括号 finding，且原文缺括号不应当作 L 错误。t21 L 的额外 1 可检出，但源层把逗号写成分号，所有候选都有标点冲突；不能把这些冲突都算真实转录错误。t22 有正文边界 finding，并有源编码 o 引起的计数冲突。
 
-计数只能核对受支持的文字层，无法发现非乱码 Unicode 的错误 ToUnicode；这种误报会在正式混淆矩阵中保留。未改 check_latex，未改写或确认论文内容。阶段 2～5 待完成。
+计数只能核对受支持的文字层，无法发现非乱码 Unicode 的错误 ToUnicode；这种误报会在正式混淆矩阵中保留。未改 check_latex，未改写或确认论文内容。
+
+## 阶段 2：字体编码表
+
+`proofparse/formula/fonttables.py` 增加白名单字体、OML 希腊字母编码、OMS 部分符号与字体样式。依据 [LaTeX Project 编码指南](https://tug.ctan.org/macros/latex/base/encguide.pdf)、[AMSFonts 字体表](https://tug.ctan.org/fonts/amsfonts/doc/amsfndoc.pdf)，并核对本地 TeX Live 的 oml/oms/umsb CMap。明确区分编码槽、Unicode 与子集 GID；没有真实编码槽的乱码不按 GID 猜码。修正 epsilon/varepsilon、phi/varphi 的经典 TeX 字形对应关系，归一化不抹去普通希腊变体。
+
+`apply_glyph_map` 的确认映射优先于 font_table，冲突进入 findings；mapping_detail 与冲突进入哈希。README 和复查协议同步说明来源等级及旧清单重导出。
+
+`proofparse/pdf/fontnames.py` 提供可选 TTF/OpenType/CFF GID→字形名路径，`pyproject.toml` 增加 fontnames extra。用 [fontTools 官方接口](https://fonttools.readthedocs.io/en/latest/ttLib/ttFont.html) 与 CFF charset；未安装、不嵌入或字形名无语义时明确降级。现有解释器没有 fontTools，未安装；真实字体名恢复路径未实跑，不宣称已验证恢复效果。`tests/test_font_tables.py` 覆盖全部字体族、编码槽、GID 不代替字符码及确认优先级。61 项测试中 60 通过、1 跳过、0 失败；跳过项是 fontTools 的嵌入 CFF 测试。
+
+三篇真实 PDF 的全页字符统计位于 `output/verifier-eval-20260930/stage2-fonts.json`：均没有白名单字体，font_table 映射各 0、与已有确认映射一致/冲突各 0。因此 t05/t21 不能由白名单表自动解决；已有文档内 K/B 视觉映射可复用，但其效果不能记为新字体表的自动能力。Adv/STIX/Bembo/TeX_CM_Maths_* 名称不做无来源扩张。没有修改用户的映射文件。阶段 3～5 待完成。
