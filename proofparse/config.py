@@ -35,6 +35,7 @@ class ApiConfig:
     concurrency: int = 4
     max_requests: int = 200
     max_output_tokens: int = 4096
+    thinking: str = "disabled"
 
 
 @dataclass
@@ -42,6 +43,7 @@ class Config:
     path: Path | None = None
     layout: str = "mineru_pipeline"
     formula: list[str] = field(default_factory=lambda: ["mineru_pipeline", "pp_formulanet_plus_m"])
+    formula_fallback: list[str] = field(default_factory=list)
     engines: dict[str, EngineConfig] = field(default_factory=dict)
     escalation: str = "agent"
     api: ApiConfig = field(default_factory=ApiConfig)
@@ -49,6 +51,10 @@ class Config:
 
     def engine(self, name: str) -> EngineConfig:
         return self.engines.get(name) or EngineConfig(name=name)
+
+    @property
+    def formula_order(self) -> list[str]:
+        return self.formula + self.formula_fallback
 
 
 def user_config_path() -> Path:
@@ -80,6 +86,7 @@ def load(path: Path | None = None) -> Config:
         raise ValueError(f"{path}: escalation.mode must be one of {ESCALATION_MODES}, got {mode!r}")
     cfg = Config(path=Path(path), layout=pipeline.get("layout", "mineru_pipeline"),
                  formula=list(pipeline.get("formula", Config().formula)),
+                 formula_fallback=list(pipeline.get("formula_fallback", [])),
                  engines=engines, escalation=mode,
                  api=ApiConfig(**esc.get("api", {})),
                  render_scale=float(pipeline.get("render_scale", 3.0)))

@@ -13,7 +13,7 @@ import shutil
 import time
 import traceback
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import engines
@@ -21,6 +21,7 @@ from .config import Config
 from .engines.runner import run_engine
 from .ir import Document, Page
 from .preprocess import native
+from .preprocess.render import render_page
 from .stages import assemble, layout, reconcile, recognize, text
 
 STAGES = ("preprocess", "layout", "text", "recognize", "reconcile", "assemble")
@@ -114,10 +115,32 @@ def stage_preprocess(papers, cfg, work, log):
 
 def stage_layout(papers, cfg, work, log):
     spec = engines.get(cfg.layout)
-    if "page_parse" not in spec.tasks:
-        raise NotImplementedError(f"layout engine {cfg.layout}: only page_parse engines are wired so far")
-    items = [{"id": p.key, "pdf": str(p.source_pdf)} for p in papers]
-    outputs, info = run_engine(cfg, cfg.layout, "page_parse", items, work, log=log)
+    if "page_parse" in spec.tasks:
+        items = [{"id": p.key, "pdf": str(p.source_pdf)} for p in papers]
+        outputs, info = run_engine(cfg, cfg.layout, "page_parse", items, work, log=log)
+    elif "layout" in spec.tasks:
+        scale = float(cfg.engine(cfg.layout).options.get("page_scale", 1.5))
+        items, owners = [], {}
+        for paper in papers:
+            for page in paper.doc.pages:
+                item_id = f"{paper.key}/p{page.index:03d}"
+                image = render_page(paper.source_pdf, page.index,
+                                    paper.dir / "pages" / f"p{page.index:03d}.png", scale)
+                items.append({"id": item_id, "image": str(image), "scale": scale})
+                owners[item_id] = (paper.key, page.index)
+        page_outputs, info = run_engine(cfg, cfg.layout, "layout", items, work, log=log)
+        outputs = {paper.key: {"regions": []} for paper in papers}
+        for item_id, output in page_outputs.items():
+            key, page = owners[item_id]
+            regions = outputs[key]["regions"]
+            offset = len(regions)
+            for region in output["regions"]:
+                region = dict(region, page=page)
+                if region.get("parent") is not None:
+                    region["parent"] += offset
+                regions.append(region)
+    else:
+        raise ValueError(f"engine {cfg.layout} does not provide layout or page_parse")
     for paper in papers:
         layout.apply_page_parse(paper.doc, cfg.layout, outputs[paper.key])
         paper.mark("layout", engine=cfg.layout, seconds=info.seconds, cached=info.n_cached > 0)
@@ -139,7 +162,7 @@ def stage_recognize(papers, cfg, work, log):
 
 def stage_reconcile(papers, cfg, work, log):
     for paper in papers:
-        counts = reconcile.run(paper.doc, paper.page_chars(), cfg.formula)
+        counts = reconcile.run(paper.doc, paper.page_chars(), cfg.formula_order)
         paper.mark("reconcile", decisions=counts)
 
 
@@ -154,6 +177,21 @@ _RUN = {"preprocess": stage_preprocess, "layout": stage_layout, "text": stage_te
         "recognize": stage_recognize, "reconcile": stage_reconcile, "assemble": stage_assemble}
 
 
+def stage_config_key(stage: str, cfg: Config) -> str | None:
+    """Only model-dependent stages need invalidation when the user changes settings."""
+    if stage == "layout":
+        settings = [cfg.layout, asdict(cfg.engine(cfg.layout))]
+    elif stage == "recognize":
+        settings = [cfg.formula, cfg.formula_fallback, cfg.render_scale,
+                    [asdict(cfg.engine(name)) for name in cfg.formula_order]]
+    elif stage == "reconcile":
+        settings = cfg.formula_order
+    else:
+        return None
+    import json
+    return hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def run(papers: list[Paper], cfg: Config, work: Path, *, stages=STAGES, force: bool = False,
         log=print) -> dict[str, str]:
     """Run stages over papers; a failing paper is reported and skipped, not fatal."""
@@ -161,7 +199,11 @@ def run(papers: list[Paper], cfg: Config, work: Path, *, stages=STAGES, force: b
     for stage in STAGES:
         if stage not in stages:
             continue
-        todo = [p for p in papers if p.key not in failed and (force or not p.done(stage))]
+        config_key = stage_config_key(stage, cfg)
+        todo = [p for p in papers if p.key not in failed and
+                (force or not p.done(stage) or
+                 (config_key is not None and
+                  p.doc.stages[stage].get("config_key") != config_key))]
         if not todo:
             continue
         log(f"[stage] {stage}: {len(todo)} paper(s)")
@@ -183,5 +225,9 @@ def run(papers: list[Paper], cfg: Config, work: Path, *, stages=STAGES, force: b
                         (p.dir / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
                         log(f"[fail] {p.key} {stage}: {one}")
         for p in todo:
+            if p.key in failed:
+                p.doc.stages[stage] = {"status": "failed", "error": failed[p.key]}
+            elif config_key is not None:
+                p.doc.stages[stage]["config_key"] = config_key
             p.save()
     return failed

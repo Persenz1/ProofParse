@@ -1,0 +1,51 @@
+# Pilot configuration, tested on 2026-10-02; paths describe this Windows host.
+# Use --config proofparse.vlm.example.toml. The original defaults stay available.
+
+[pipeline]
+layout = "pp_doclayout_v3"
+formula = ["pp_formulanet_plus_m", "paddleocr_vl"]
+formula_fallback = ["xiaomi_ocr"]
+render_scale = 3.0
+
+[engines.mineru_pipeline]
+python = 'D:\DevTools\Conda\envs\litparse\python.exe'
+
+[engines.unimernet_small]
+python = 'D:\DevTools\Conda\envs\litparse\python.exe'
+batch_size = 8
+
+[engines.pp_formulanet_plus_m]
+python = 'D:\DevTools\Conda\envs\litparse\python.exe'
+batch_size = 8
+
+[engines.pp_formulanet_plus_l]
+python = 'D:\DevTools\venvs\paddle-formula\Scripts\python.exe'
+batch_size = 1
+model_dir = 'D:\DevTools\Models\modelscope\models\PaddlePaddle--PP-FormulaNet_plus-L\snapshots\master'
+
+[engines.xiaomi_ocr]
+python = 'D:\DevTools\venvs\proofparse-vlm\Scripts\python.exe'
+batch_size = 1
+model_dir = 'D:\DevTools\Models\huggingface\hub\models--SeerRay-Lab--Xiaomi-OCR-0\snapshots\e4d1c4a6804bd9ef342b93d705a73af003e2ef4e'
+max_new_tokens = 1024
+
+[engines.paddleocr_vl]
+python = 'D:\DevTools\venvs\proofparse-vlm\Scripts\python.exe'
+batch_size = 1
+model_dir = 'D:\DevTools\Models\huggingface\hub\models--PaddlePaddle--PaddleOCR-VL-1.6\snapshots\c5630abae1d940eafe0697512a0325494b02ab42'
+max_new_tokens = 1024
+
+[engines.ovis_ocr]
+python = 'D:\DevTools\venvs\proofparse-vlm\Scripts\python.exe'
+batch_size = 1
+model_dir = 'D:\DevTools\Models\huggingface\hub\models--ATH-MaaS--OvisOCR2\snapshots\1fc9221b7823a371d6e97f92d527cc847e24e107'
+max_new_tokens = 1024
+
+[engines.pp_doclayout_v3]
+python = 'D:\DevTools\venvs\proofparse-layout\Scripts\python.exe'
+batch_size = 1
+model_dir = 'D:\DevTools\Models\huggingface\hub\models--PaddlePaddle--PP-DocLayoutV3\snapshots\241f8bdfc77a7c7bee915a5057aaee58c235a8d3'
+page_scale = 1.5
+
+[escalation]
+mode = "agent"

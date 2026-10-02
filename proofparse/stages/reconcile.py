@@ -23,7 +23,8 @@ from ..preprocess.native import region_evidence
 
 def evidence_hash(block: Block) -> str:
     """Identity of what an escalation answer was based on."""
-    raw = json.dumps([block.bbox, [(c.engine, c.content) for c in block.candidates]], ensure_ascii=False)
+    raw = json.dumps([block.bbox, block.extra.get("crop_regions"),
+                      [(c.engine, c.content) for c in block.candidates]], ensure_ascii=False)
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -35,6 +36,11 @@ def _body_key(latex: str) -> tuple[str, ...]:
 def _native_evidence(block: Block, page_chars: list[dict], display_boxes: list[list[float]],
                      page_width: float) -> tuple[dict, dict | None]:
     box = block.bbox
+    if block.extra.get("crop_regions"):
+        page_chars = [c for c in page_chars if any(
+            r[0] - 0.5 <= (c["bbox_pt"][0] + c["bbox_pt"][2]) / 2 <= r[2] + 0.5
+            and r[1] - 0.5 <= (c["bbox_pt"][1] + c["bbox_pt"][3]) / 2 <= r[3] + 0.5
+            for r in block.extra["crop_regions"])]
     if block.kind == ir.DISPLAY_MATH:
         region = [0, box[1] - 2, page_width, box[3] + 2]  # keep numbers on the same rows
     else:
@@ -48,7 +54,8 @@ def _native_evidence(block: Block, page_chars: list[dict], display_boxes: list[l
 
 def decide_formula(block: Block, order: list[str], evidence: dict | None = None,
                    numbers: dict | None = None) -> Decision:
-    cands = [c for c in block.candidates if c.format == "latex" and c.content.strip()]
+    cands = [c for c in block.candidates
+             if c.engine in order and c.format == "latex" and c.content.strip()]
     if not cands:
         return Decision(status=ir.FAILED, rule="no_candidate")
     rank = {name: i for i, name in enumerate(order)}

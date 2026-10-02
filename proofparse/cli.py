@@ -104,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-e", "--engines", default="")
     p.add_argument("--kinds", default="display,inline")
     p.add_argument("--limit", type=int)
+    p.add_argument("--render-compare", action="store_true", help="also compare canonical TeX rendering")
 
     args = ap.parse_args(argv)
     cfg = config_mod.load(args.config)
@@ -169,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "engines":
         print(f"config: {cfg.path or '(none; defaults)'}  layout={cfg.layout}  formula={cfg.formula}  "
+              f"fallback={cfg.formula_fallback}  "
               f"escalation={cfg.escalation}")
         for name, spec in sorted(engines.REGISTRY.items()):
             print(f"  {name:24} tasks={','.join(sorted(spec.tasks)):12} python={cfg.engine(name).python}")
@@ -188,7 +190,8 @@ def main(argv: list[str] | None = None) -> int:
             names = [n for n in args.engines.split(",") if n]
             if not names:
                 ap.error("bench formula needs -e ENGINE[,ENGINE...]")
-            bench.bench_formula(args.root, cfg, names, kinds=tuple(args.kinds.split(",")), limit=args.limit)
+            bench.bench_formula(args.root, cfg, names, kinds=tuple(args.kinds.split(",")), limit=args.limit,
+                                render_compare=args.render_compare)
         else:
             bench.bench_inline(args.root)
         return 0

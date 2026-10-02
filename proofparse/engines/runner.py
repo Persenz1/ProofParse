@@ -5,7 +5,7 @@ call the runner once per engine, so models are never swapped per item. The
 worker runs in the engine's configured interpreter, which isolates CUDA
 frameworks (Paddle vs PyTorch) and frees VRAM when the process exits.
 
-Outputs are cached by (engine, task, options, item content). Re-running a
+Outputs are cached by (engine, task, options, execution settings, item content). Re-running a
 stage after an interruption or on unchanged evidence costs nothing.
 """
 from __future__ import annotations
@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,10 +54,12 @@ def _file_digest(path: str, _cache: dict[str, str] = {}) -> str:
     return _cache[key]
 
 
-def item_key(engine: str, task: str, options: dict, item: dict) -> str:
+def item_key(engine: str, task: str, options: dict, item: dict, *, python: str = sys.executable,
+             device: str = "auto", batch_size: int = 16) -> str:
     content = {k: (_file_digest(v) if k in _FILE_FIELDS else v)
                for k, v in item.items() if k != "id"}
-    raw = json.dumps([engine, task, options, content], sort_keys=True, ensure_ascii=False)
+    execution = {"python": python, "device": device, "batch_size": batch_size}
+    raw = json.dumps([engine, task, options, execution, content], sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
@@ -73,7 +76,8 @@ def run_engine(cfg: Config, name: str, task: str, items: list[dict], work: Path,
         raise EngineError("item ids must be unique within one engine call")
 
     cache_dir = Path(work) / "cache" / name
-    keys = {item["id"]: item_key(name, task, options, item) for item in items}
+    keys = {item["id"]: item_key(name, task, options, item, python=ecfg.python,
+                                device=ecfg.device, batch_size=ecfg.batch_size) for item in items}
     outputs, todo = {}, []
     for item in items:
         path = cache_dir / f"{keys[item['id']]}.json"

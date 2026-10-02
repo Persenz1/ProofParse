@@ -17,6 +17,7 @@ from pathlib import Path
 from .. import engines
 from ..config import Config
 from ..engines.runner import run_engine
+from ..formula.output import content as formula_content
 from ..ir import read_json, write_json
 from ..preprocess.render import crop_regions
 from . import score as scoring
@@ -50,7 +51,7 @@ def formula_items(root: Path, *, kinds=("display", "inline"), limit: int | None 
                 skipped[kind] = skipped.get(kind, 0) + 1
                 continue
             occ = f["occurrences"][0]
-            crop = Path(root) / "bench" / "crops" / gold["paper"] / f"{f['id']:05d}.png"
+            crop = Path(root) / "bench" / "crops" / f"scale-{scale}" / gold["paper"] / f"{f['id']:05d}.png"
             if not crop.is_file():
                 jobs.append((occ["page"], occ["bbox_pt"], crop, PAD_PT))
             items.append({"id": f"{gold['paper']}/{f['id']:05d}", "image": str(crop), "kind": kind,
@@ -62,7 +63,7 @@ def formula_items(root: Path, *, kinds=("display", "inline"), limit: int | None 
 
 
 def bench_formula(root: Path, cfg: Config, names: list[str], *, kinds=("display", "inline"),
-                  limit: int | None = None, log=print) -> dict:
+                  limit: int | None = None, render_compare: bool = False, log=print) -> dict:
     items, skipped = formula_items(root, kinds=kinds, limit=limit, scale=cfg.render_scale)
     work = Path(root) / "bench" / "work"
     predictions: dict[str, dict[str, str]] = {}
@@ -70,7 +71,7 @@ def bench_formula(root: Path, cfg: Config, names: list[str], *, kinds=("display"
     for name in names:
         outputs, info = run_engine(cfg, name, "formula",
                                    [{k: it[k] for k in ("id", "image", "kind")} for it in items], work, log=log)
-        predictions[name] = {i: o.get("latex", "") for i, o in outputs.items()}
+        predictions[name] = {i: formula_content(o)[0] for i, o in outputs.items()}
         runs[name] = {"seconds": info.seconds, "cached": info.n_cached, "peak_vram_mb": info.peak_vram_mb,
                       "family": engines.family(name, "formula")}
     rows = []
@@ -79,6 +80,10 @@ def bench_formula(root: Path, cfg: Config, names: list[str], *, kinds=("display"
         for name in names:
             pred = predictions[name].get(it["id"], "")
             row["engines"][name] = {"latex": pred, **scoring.score(pred, it["gold"])}
+            if render_compare:
+                from .render import compare as compare_render
+                row["engines"][name]["render"] = compare_render(
+                    pred, it["gold"], Path(root) / "bench" / "render" / name / it["id"].replace("/", "-"))
         rows.append(row)
     summary = {}
     for name in names:
@@ -103,6 +108,14 @@ def bench_formula(root: Path, cfg: Config, names: list[str], *, kinds=("display"
                              "same_family": engines.family(a, "formula") == engines.family(b, "formula")}
     result = {"kind": "formula", "created": time.strftime("%Y-%m-%dT%H:%M:%S"), "engines": runs,
               "n_items": len(items), "skipped_gold": skipped, "summary": summary, "pairs": pairs, "rows": rows}
+    if render_compare:
+        from collections import Counter
+        result["render_summary"] = {}
+        for name in names:
+            values = [row["engines"][name]["render"] for row in rows]
+            result["render_summary"][name] = {
+                "n": len(values), "equivalent": sum(v.get("equivalent") is True for v in values),
+                "status": dict(Counter(v["status"] for v in values))}
     out = Path(root) / "bench" / f"formula-{time.strftime('%Y%m%d-%H%M%S')}.json"
     write_json(out, result)
     log(format_formula_summary(result))
@@ -122,6 +135,11 @@ def format_formula_summary(result: dict) -> str:
         prec = f"{p['agreement_precision']:.1%}" if p["agreement_precision"] is not None else "-"
         lines.append(f"{pair:56} {p['agree']:6d} {p['agree_but_wrong']:6d} {prec:>7} {p['either_correct']:7d}"
                      + ("  (same family)" if p["same_family"] else ""))
+    for name, s in result.get("render_summary", {}).items():
+        lines.append(f"[render] {name}: {s['equivalent']}/{s['n']} canonical equivalents; {s['status']}")
+    for name, info in result["engines"].items():
+        if info["cached"]:
+            lines.append(f"[cache] {name}: {info['cached']} items reused; seconds report only this run")
     return "\n".join(lines)
 
 

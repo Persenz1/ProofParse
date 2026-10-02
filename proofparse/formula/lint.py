@@ -4,6 +4,57 @@ from __future__ import annotations
 
 import re
 
+from .syntax import tokens
+
+
+def _array_column_overflow(latex: str) -> bool:
+    values = [token.value for token in tokens(latex) if not token.value.isspace()]
+
+    def group(start):
+        if start >= len(values) or values[start] != "{":
+            return [], start
+        end, depth = start + 1, 1
+        while end < len(values) and depth:
+            if values[end] == "{":
+                depth += 1
+            elif values[end] == "}":
+                depth -= 1
+            end += 1
+        return (values[start + 1:end - 1] if depth == 0 else []), end
+
+    stack = []
+    i = 0
+    while i < len(values):
+        value = values[i]
+        if value in (r"\begin", r"\end"):
+            name, i = group(i + 1)
+            name = "".join(name)
+            if value == r"\begin":
+                columns = None
+                if name == "array":
+                    declaration, i = group(i)
+                    if declaration and all(v in "lcr|" for v in declaration):
+                        columns = sum(v in "lcr" for v in declaration)
+                stack.append({"name": name, "columns": columns, "cells": 1,
+                              "maximum": 1, "complex": False})
+            elif stack and stack[-1]["name"] == name:
+                current = stack.pop()
+                if (current["columns"] and not current["complex"]
+                        and current["maximum"] > current["columns"]):
+                    return True
+            continue
+        if stack and stack[-1]["columns"] is not None:
+            current = stack[-1]
+            if value == "&":
+                current["cells"] += 1
+                current["maximum"] = max(current["maximum"], current["cells"])
+            elif value == r"\\":
+                current["cells"] = 1
+            elif value == r"\multicolumn":
+                current["complex"] = True
+        i += 1
+    return False
+
 
 def check_latex(latex: str) -> list[str]:
     """返回问题列表；空列表表示通过。"""
@@ -30,6 +81,9 @@ def check_latex(latex: str) -> list[str]:
 
     if re.search(r"(.)\1{9,}", latex):
         problems.append("suspicious_repetition")
+
+    if _array_column_overflow(latex):
+        problems.append("array_column_overflow")
 
     # A delimiter pair cannot cross a brace group or alignment cell, even
     # when the total numbers of left/right and braces happen to match.

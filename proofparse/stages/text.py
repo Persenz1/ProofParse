@@ -12,12 +12,13 @@ with its $...$ spans turned into children the same way.
 from __future__ import annotations
 
 import re
+from statistics import median
 import unicodedata
 
 from .. import engines, ir
 from ..formula.syntax import math_spans
 from ..ir import Block, Candidate, Document
-from ..preprocess.native import is_math_font
+from ..preprocess.native import font_name, is_math_font
 
 CLAIMING_KINDS = ir.PROSE_KINDS | {ir.DISPLAY_MATH, ir.FIGURE, ir.TABLE, ir.CODE, ir.ALGORITHM,
                                    ir.FURNITURE, ir.OTHER}
@@ -63,14 +64,21 @@ def assign_glyphs(blocks: list[Block], chars: list[dict]) -> tuple[dict[str, lis
 
 # ------------------------------------------------------------------ lines
 
-def build_lines(chars: list[dict]) -> list[list[dict]]:
+def build_lines(chars: list[dict], body_size: float | None = None) -> list[list[dict]]:
     """Group glyphs into text lines; scripts attach to the line they sit on."""
     if not chars:
         return []
     sizes = sorted(c["size_pt"] for c in chars)
-    body = sizes[len(sizes) // 2]
-    primary = sorted((c for c in chars if c["size_pt"] >= 0.8 * body), key=lambda c: c["origin_pt"][1])
-    secondary = [c for c in chars if c["size_pt"] < 0.8 * body]
+    body = body_size or sizes[len(sizes) // 2]
+    primary, secondary = [], []
+    for c in chars:
+        # TeX extension glyph origins are displaced from the text baseline.
+        # Their visible centres, like scripts, identify the line they belong to.
+        if c["size_pt"] < 0.8 * body or font_name(c["font"]).upper().startswith("CMEX"):
+            secondary.append(c)
+        else:
+            primary.append(c)
+    primary.sort(key=lambda c: c["origin_pt"][1])
     lines: list[dict] = []
     for c in primary:
         y = c["origin_pt"][1]
@@ -110,6 +118,9 @@ def math_runs(line: list[dict], body_size: float) -> list[tuple[int, int]]:
     """Index ranges [start, end) of inline math within an x-sorted line."""
     n = len(line)
     seed = [_is_seed(c) for c in line]
+    if (n > 1 and line[0]["text"] == "•" and not seed[1]
+            and line[1]["text"].isalpha() and _gap(line[0], line[1]) > 0.2 * body_size):
+        seed[0] = False  # a separated list marker before prose, not a math operator
     small = [c["size_pt"] < 0.8 * body_size for c in line]
     member = list(seed)
 
@@ -119,6 +130,25 @@ def math_runs(line: list[dict], body_size: float) -> list[tuple[int, int]]:
 
     def close(i: int, j: int) -> bool:  # gap between neighbours small enough to be one expression
         return _gap(line[i], line[j]) < 0.6 * max(line[i]["size_pt"], line[j]["size_pt"])
+
+    def tight(i: int, j: int) -> bool:
+        return _gap(line[i], line[j]) <= 0.15 * max(line[i]["size_pt"], line[j]["size_pt"])
+
+    def prose_word(i: int, step: int) -> str:
+        letters = []
+        while 0 <= i < n and not seed[i] and line[i]["text"].isalpha():
+            if letters:
+                a, b = sorted((i - step, i))
+                if not tight(a, b):
+                    break
+            letters.append(line[i]["text"])
+            i += step
+        return "".join(letters if step > 0 else reversed(letters))
+
+    def prose_after(i: int) -> bool:
+        word = prose_word(i, 1)
+        abbreviation = "".join(c["text"] for c in line[i:i + 4])
+        return len(word) >= 2 or abbreviation in ("i.e.", "e.g.")
 
     changed = True
     while changed:
@@ -162,6 +192,14 @@ def math_runs(line: list[dict], body_size: float) -> list[tuple[int, int]]:
     for start, end in runs:
         while end > start and line[end - 1]["text"] in _TRAILING and not seed[end - 1]:
             end -= 1
+        # Compound-word hyphens belong to adjacent prose: controlled-$U$,
+        # $i$-th. Unary minus and x-y have no such contiguous prose word.
+        if (start < end and line[start]["text"] == "-" and not seed[start] and start > 0
+                and len(prose_word(start - 1, -1)) >= 2 and tight(start - 1, start)):
+            start += 1
+        if (end > start and line[end - 1]["text"] == "-" and not seed[end - 1]
+                and end < n and prose_after(end) and tight(end - 1, end)):
+            end -= 1
         depth: dict[str, int] = {}
         for k in range(start, end):
             t = line[k]["text"]
@@ -171,6 +209,10 @@ def math_runs(line: list[dict], body_size: float) -> list[tuple[int, int]]:
                 depth[_PAIRS[t]] = depth.get(_PAIRS[t], 0) - 1
         while end > start and line[end - 1]["text"] in _PAIRS and depth.get(_PAIRS[line[end - 1]["text"]], 0) < 0:
             depth[_PAIRS[line[end - 1]["text"]]] += 1
+            end -= 1
+        while (end > start and line[end - 1]["text"] == "(" and not seed[end - 1]
+               and depth.get("(", 0) > 0 and end < n and prose_after(end)):
+            depth["("] -= 1
             end -= 1
         while end > start and line[start]["text"] in "([{" and depth.get(line[start]["text"], 0) > 0:
             depth[line[start]["text"]] -= 1
@@ -193,6 +235,19 @@ def compose(lines: list[list[dict]], runs_per_line: list[list[tuple[int, int]]])
         pieces: list[str] = []
         runs = {start: end for start, end in runs_per_line[li]}
         i, prev = 0, None
+        continuing = False
+        # A bracketed formula can wrap from the right margin to the next
+        # line's first glyph. Join only a directly adjacent closing fragment;
+        # intervening prose or another formula must retain its own slot.
+        if out and out[-1].endswith(ir.INLINE_SLOT) and slots and 0 in runs:
+            balance = sum((c["text"] == "[") - (c["text"] == "]") for c in slots[-1])
+            end = runs[0]
+            if end < len(line) and line[end]["text"] == "]":
+                end += 1  # math_runs left the unmatched closing bracket in prose
+            tail_balance = sum((c["text"] == "[") - (c["text"] == "]") for c in line[:end])
+            if balance == 1 and tail_balance == -1 and line[end - 1]["text"] == "]":
+                slots[-1].extend(line[:end])
+                prev, i, continuing = line[end - 1], end, True
         while i < len(line):
             c = line[i]
             if prev is not None and _gap(prev, c) > 0.2 * c["size_pt"]:
@@ -203,8 +258,17 @@ def compose(lines: list[list[dict]], runs_per_line: list[list[tuple[int, int]]])
                 prev, i = line[runs[i] - 1], runs[i]
                 continue
             pieces.append(_clean(c["text"]))
-            prev, i = c, i + 1
-        text = "".join(pieces).strip()
+            # One ligature can yield several Unicode characters at one origin,
+            # with a zero-width continuation. Keep the cluster's right edge.
+            if (prev is None or c["origin_pt"] != prev["origin_pt"]
+                    or c["bbox_pt"][2] > prev["bbox_pt"][2]):
+                prev = c
+            i += 1
+        text = "".join(pieces)
+        if continuing:
+            out[-1] += text.rstrip()
+            continue
+        text = text.strip()
         if not text:
             continue
         if out and out[-1].endswith("-") and text[:1].islower() and not out[-1].endswith(" -"):
@@ -265,16 +329,26 @@ def text_from_layer(block: Block, chars: list[dict], proposals: list[Block], bod
     runs, provenance = _mark_proposals(lines, runs, proposals)
     text, slots = compose(lines, runs)
     by_start = {}
+    line_number = {id(c): li for li, line in enumerate(lines) for c in line}
     for (li, s, e), prov in provenance.items():
         by_start[id(lines[li][s])] = prov
     children = []
     for k, glyphs in enumerate(slots):
         box = _bbox(glyphs)
+        extra = {"detected_by": sorted(by_start.get(id(glyphs[0]), {"native"})),
+                 "native_text": "".join(c["text"] for c in glyphs),
+                 "glyphs": [c["source_index"] for c in glyphs]}
+        if len({line_number[id(c)] for c in glyphs}) > 1:
+            fragments = build_lines(glyphs, body_size)
+            extra["crop_regions"] = [_bbox(part) for part in fragments]
+            extra["crop_baselines"] = [round(median(
+                c["origin_pt"][1] for c in part
+                if c["size_pt"] >= 0.8 * body_size
+                and not font_name(c["font"]).upper().startswith("CMEX")
+            ), 2) for part in fragments]
         child = Block(id=f"{block.id}.m{k:02d}", page=block.page, bbox=box, kind=ir.INLINE_MATH,
                       order=block.order, parent=block.id, source="text_layer",
-                      extra={"detected_by": sorted(by_start.get(id(glyphs[0]), {"native"})),
-                             "native_text": "".join(c["text"] for c in glyphs),
-                             "glyphs": [c["source_index"] for c in glyphs]})
+                      extra=extra)
         cand = _engine_candidate(proposals, box)
         if cand:
             child.candidates.append(cand)

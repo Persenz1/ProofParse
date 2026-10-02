@@ -340,7 +340,8 @@ def analyze(evidence: dict, candidates: dict[str, str], *, numbers: dict | None 
         association = result['number_association']
         if association['status'] == 'associated_by_layout':
             expected = association['candidates'][0]['value']
-            if parsed['numbers'] != [expected]:
+            # Assembly restores an absent tag from this source association.
+            if parsed['numbers'] and parsed['numbers'] != [expected]:
                 result['findings'].append({'candidate': name, 'type': 'number_constraint',
                     'source_number': expected, 'candidate_numbers': parsed['numbers'],
                     'association': 'layout_hint'})

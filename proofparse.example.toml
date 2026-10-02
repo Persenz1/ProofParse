@@ -30,3 +30,4 @@ key_env = "PROOFPARSE_API_KEY"
 concurrency = 4
 max_requests = 200
 max_output_tokens = 4096
+thinking = "disabled" # MiMo-compatible thinking control; set enabled only when explicitly wanted

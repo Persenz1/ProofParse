@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -136,7 +137,7 @@ def apply_answers(papers, answers: dict, *, by: str = "agent") -> dict:
 
 # ------------------------------------------------------------------ API mode
 
-def _ask(cfg: Config, task: dict, cache_dir: Path) -> dict | None:
+def _ask(cfg: Config, task: dict, cache_dir: Path, *, metrics_dir: Path | None = None) -> dict | None:
     cache = cache_dir / f"{task['task_id'].replace('/', '__')}-{task['input_hash']}.json"
     if cache.is_file():
         return read_json(cache)
@@ -146,6 +147,7 @@ def _ask(cfg: Config, task: dict, cache_dir: Path) -> dict | None:
     image = base64.b64encode(Path(task["image"]).read_bytes()).decode()
     shown = {k: task[k] for k in ("task_id", "input_hash", "kind", "context_text", "candidates", "differences")}
     body = {"model": cfg.api.model, "max_tokens": cfg.api.max_output_tokens,
+            "thinking": {"type": cfg.api.thinking},
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": INSTRUCTIONS},
                          {"role": "user", "content": [
@@ -154,18 +156,36 @@ def _ask(cfg: Config, task: dict, cache_dir: Path) -> dict | None:
     request = urllib.request.Request(cfg.api.base_url.rstrip("/") + "/chat/completions",
                                      data=json.dumps(body).encode(), method="POST",
                                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    started = time.perf_counter()
     with urllib.request.urlopen(request, timeout=300) as response:
         raw = json.loads(response.read())
-    text = raw["choices"][0]["message"]["content"]
+    seconds = time.perf_counter() - started
+    choice = raw["choices"][0]
+    message = choice["message"]
+    text = message["content"]
+    parsed = True
     try:
         answer = json.loads(text)
         answer = answer.get(task["task_id"], answer)
     except (json.JSONDecodeError, AttributeError):
         answer = {"choice": "open", "unparsed": text[:2000]}
+        parsed = False
     if not isinstance(answer, dict):
         answer = {"choice": "open", "unparsed": text[:2000]}
+        parsed = False
     answer["input_hash"] = task["input_hash"]  # the question was asked about exactly this evidence
     write_json(cache, answer)
+    usage = raw.get("usage", {})
+    if metrics_dir is not None:
+        write_json(Path(metrics_dir) / cache.name, {
+            "task_id": task["task_id"], "input_hash": task["input_hash"],
+            "model": cfg.api.model, "seconds": round(seconds, 4),
+            "request_thinking": cfg.api.thinking,
+            "reasoning_content_empty": not bool(message.get("reasoning_content")),
+            "reasoning_tokens": usage.get("completion_tokens_details", {}).get("reasoning_tokens"),
+            "finish_reason": choice.get("finish_reason"), "usage": usage,
+            "parsed_json": parsed,
+        })
     return answer
 
 
@@ -178,7 +198,7 @@ def resolve_with_api(papers, cfg: Config, work: Path, log=print) -> dict:
 
     def one(task):
         try:
-            return task["task_id"], _ask(cfg, task, cache_dir), None
+            return task["task_id"], _ask(cfg, task, cache_dir, metrics_dir=Path(work) / "api_metrics"), None
         except Exception as exc:  # report per task; never retry blindly
             return task["task_id"], None, f"{type(exc).__name__}: {exc}"
 

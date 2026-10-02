@@ -123,8 +123,10 @@ def text_layer_status(page, characters: list[dict]) -> dict:
 
 def page_objects(page, limit: int = 4000) -> dict:
     """Image and vector-drawing boxes; figure boundaries are refined against these."""
+    import pymupdf
+
     rot = page.rotation_matrix
-    images = [[round(v, 2) for v in (info["bbox"] * rot)] for info in page.get_image_info()]
+    images = [[round(v, 2) for v in (pymupdf.Rect(info["bbox"]) * rot)] for info in page.get_image_info()]
     drawings = []
     for d in page.get_drawings():
         r = d["rect"] * rot

@@ -31,9 +31,11 @@ def _spec(name, module, tasks, families, **defaults):
     return EngineSpec(name, module, frozenset(tasks), families, defaults)
 
 
-# Engines not listed here are candidates from docs/MODEL_SELECTION_PLAN; they get an
-# adapter once they have run on the benchmark, not before.
+# Candidate adapters are registered for benchmarking; registration alone does
+# not select an engine for the default extraction pipeline.
 REGISTRY: dict[str, EngineSpec] = {s.name: s for s in (
+    _spec("pp_doclayout_v3", "proofparse.engines.paddle_layout", {"layout"},
+          {"layout": "pp-doclayout"}),
     # MinerU 3.4.5 pipeline: PP-DocLayoutV2 layout, UniMERNet-small formulas.
     _spec("mineru_pipeline", "proofparse.engines.mineru_pipeline", {"page_parse"},
           {"layout": "pp-doclayout", "formula": "unimernet", "text": "mineru-ocr",
@@ -45,6 +47,14 @@ REGISTRY: dict[str, EngineSpec] = {s.name: s for s in (
     # plus-L ships as a Paddle inference model; set options.model_dir in the config.
     _spec("pp_formulanet_plus_l", "proofparse.engines.mineru_mfr", {"formula"},
           {"formula": "pp-formulanet"}, model="pp_formulanet_plus_l", backend="paddle"),
+    # Xiaomi and Ovis share the Qwen3.5-0.8B backbone; treat their agreement
+    # conservatively until measured error correlations justify independence.
+    _spec("xiaomi_ocr", "proofparse.engines.hf_ocr", {"formula"},
+          {"formula": "qwen3.5-ocr"}),
+    _spec("ovis_ocr", "proofparse.engines.hf_ocr", {"formula"},
+          {"formula": "qwen3.5-ocr"}),
+    _spec("paddleocr_vl", "proofparse.engines.hf_ocr", {"formula"},
+          {"formula": "paddleocr-vl"}),
 )}
 
 
